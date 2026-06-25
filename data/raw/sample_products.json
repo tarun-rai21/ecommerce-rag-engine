@@ -1,0 +1,21 @@
+[
+  {
+    "id": 101,
+    "title": " Rugged Camping Backpack ",
+    "description": "Heavy duty waterproof bag designed for multi-day mountain hiking trails. Includes hydration compartment.",
+    "price": 45.99,
+    "category": "Outdoor Gear"
+  },
+  {
+    "id": 102,
+    "title": "Corrupted Product Error Sample",
+    "description": "This record should fail validation because the price is negative.",
+    "price": -12.50,
+    "category": "Testing Failures"
+  },
+  {
+    "id": 103,
+    "title": "Wireless Charging Pad",
+    "price": 19.99
+  }
+]
