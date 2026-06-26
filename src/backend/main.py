@@ -5,16 +5,20 @@ from loguru import logger
 from src.backend.api.middleware import RequestTimingMiddleware
 from src.backend.api.v1.router import router as v1_router
 from src.backend.services.search import ProductSearchService
+from src.backend.services.cache import CacheService
+from src.backend.services.llm import LLMService
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up — connecting to Qdrant.")
-    service = ProductSearchService()
-    app.state.search_service = service
+    app.state.search_service = ProductSearchService()
+    app.state.cache_service = CacheService()
+    app.state.llm_service = LLMService()
     yield
-    logger.info("Shutting down — closing Qdrant connection.")
-    await service.close()
+    logger.info("Shutting down.")
+    await app.state.search_service.close()
+    app.state.cache_service.close()
 
 
 app = FastAPI(

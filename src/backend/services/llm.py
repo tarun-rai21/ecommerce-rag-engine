@@ -6,8 +6,7 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
-from google import genai
-from google.genai import types
+from groq import Groq, RateLimitError, APIConnectionError
 
 from config.settings import settings
 
@@ -21,9 +20,9 @@ CRITICAL RULES:
 
 class LLMService:
     def __init__(self) -> None:
-        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.model_name = "models/gemini-2.0-flash-lite"
-        logger.info("LLMService initialized with Gemini 2.0 Flash.")
+        self.client = Groq(api_key=settings.GROQ_API_KEY)
+        self.model_name = "llama-3.1-8b-instant"
+        logger.info("LLMService initialized with Groq llama-3.1-8b-instant.")
 
     def _build_prompt(self, query: str, context: str) -> str:
         return (
@@ -36,23 +35,25 @@ class LLMService:
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=16),
-        retry=retry_if_exception_type((Exception,)),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError)),
         reraise=True,
     )
-    def _call_gemini_sync(self, prompt: str) -> str:
-        response = self.client.models.generate_content(
+    def _call_groq_sync(self, prompt: str) -> str:
+        response = self.client.chat.completions.create(
             model=self.model_name,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-            ),
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=512,
         )
-        return response.text
+        return response.choices[0].message.content
 
     async def generate_answer(self, query: str, context: str) -> str:
         prompt = self._build_prompt(query, context)
         try:
-            answer = await asyncio.to_thread(self._call_gemini_sync, prompt)
+            answer = await asyncio.to_thread(self._call_groq_sync, prompt)
             logger.info(f"LLM response generated for query: '{query}'")
             return answer
         except Exception as e:
