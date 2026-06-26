@@ -96,7 +96,7 @@ All incoming product records pass through strict Pydantic V2 schemas before touc
 ### 3. Reciprocal Rank Fusion (RRF)
 RRF merges dense and sparse retrieval rankings using the formula:
 
-`$RRF\_Score(d) = \sum_m \frac{1}{k + r_m(d)}$`
+$RRF\_Score(d) = \sum_m \frac{1}{k + r_m(d)}$
 
 Where `k=60` is a smoothing constant and `r_m(d)` is the rank of document `d` in retrieval model `m`. This prevents any single retrieval method from dominating and produces more robust rankings than score-based fusion (which fails when dense and sparse scores are on different scales).
 
