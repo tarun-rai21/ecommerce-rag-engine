@@ -1,0 +1,77 @@
+[
+  {
+    "query": "waterproof bag for hiking",
+    "expected_product_ids": ["101", "109", "112"],
+    "ideal_response_keywords": ["waterproof", "hiking", "backpack", "45.99"]
+  },
+  {
+    "query": "wireless headphones noise cancelling",
+    "expected_product_ids": ["104"],
+    "ideal_response_keywords": ["noise cancelling", "headphones", "89.99", "battery"]
+  },
+  {
+    "query": "fast wireless charger for phone",
+    "expected_product_ids": ["103"],
+    "ideal_response_keywords": ["wireless", "charging", "19.99", "Qi"]
+  },
+  {
+    "query": "camping tent for two people lightweight",
+    "expected_product_ids": ["112"],
+    "ideal_response_keywords": ["tent", "2-person", "129.99", "backpacking"]
+  },
+  {
+    "query": "warm jacket for cold weather outdoor",
+    "expected_product_ids": ["121", "122", "120"],
+    "ideal_response_keywords": ["waterproof", "fleece", "jacket", "windproof"]
+  },
+  {
+    "query": "home office ergonomic desk setup",
+    "expected_product_ids": ["129", "130"],
+    "ideal_response_keywords": ["standing desk", "lumbar", "ergonomic", "posture"]
+  },
+  {
+    "query": "protein powder for muscle building",
+    "expected_product_ids": ["133", "134"],
+    "ideal_response_keywords": ["protein", "creatine", "powder", "serving"]
+  },
+  {
+    "query": "fitness tracker with heart rate monitor",
+    "expected_product_ids": ["119"],
+    "ideal_response_keywords": ["heart rate", "fitness", "tracker", "49.99"]
+  },
+  {
+    "query": "robot vacuum smart home",
+    "expected_product_ids": ["126"],
+    "ideal_response_keywords": ["robot", "vacuum", "299.99", "mapping"]
+  },
+  {
+    "query": "USB hub for laptop multiple ports",
+    "expected_product_ids": ["131"],
+    "ideal_response_keywords": ["USB-C", "hub", "HDMI", "39.99"]
+  },
+  {
+    "query": "sleeping bag for cold nights camping",
+    "expected_product_ids": ["114"],
+    "ideal_response_keywords": ["sleeping bag", "159.99", "goose down", "insulation"]
+  },
+  {
+    "query": "resistance bands for home workout",
+    "expected_product_ids": ["117", "116"],
+    "ideal_response_keywords": ["resistance", "bands", "workout", "tension"]
+  },
+  {
+    "query": "water bottle insulated keep cold",
+    "expected_product_ids": ["111"],
+    "ideal_response_keywords": ["insulated", "water bottle", "29.99", "vacuum"]
+  },
+  {
+    "query": "blue light glasses for screen use",
+    "expected_product_ids": ["132"],
+    "ideal_response_keywords": ["blue light", "glasses", "24.99", "eye strain"]
+  },
+  {
+    "query": "headlamp rechargeable for camping",
+    "expected_product_ids": ["136"],
+    "ideal_response_keywords": ["headlamp", "350", "rechargeable", "34.99"]
+  }
+]
