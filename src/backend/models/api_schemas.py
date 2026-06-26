@@ -18,3 +18,27 @@ class ProductSearchResult(BaseModel):
 class SearchResponseEnvelope(BaseModel):
     results: list[ProductSearchResult]
     latency_ms: float
+
+
+# ── Diagnostic fields for /ask endpoint ──────────────────
+
+class RetrievedProduct(BaseModel):
+    id: str | int
+    title: str
+    category: str
+    price: float
+    rrf_score: float
+
+
+class TimingBreakdown(BaseModel):
+    cache_lookup_ms: float
+    search_ms: float
+    llm_ms: float
+    total_ms: float
+
+
+class AskResponseEnvelope(BaseModel):
+    answer: str
+    source: str
+    retrieved_products: list[RetrievedProduct]
+    timing: TimingBreakdown

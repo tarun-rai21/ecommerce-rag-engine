@@ -11,14 +11,14 @@ from src.backend.services.llm import LLMService
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting up — connecting to Qdrant.")
+    logger.info("Starting up — connecting to Qdrant and Redis.")
     app.state.search_service = ProductSearchService()
     app.state.cache_service = CacheService()
     app.state.llm_service = LLMService()
     yield
     logger.info("Shutting down.")
     await app.state.search_service.close()
-    app.state.cache_service.close()
+    await app.state.cache_service.close()
 
 
 app = FastAPI(
