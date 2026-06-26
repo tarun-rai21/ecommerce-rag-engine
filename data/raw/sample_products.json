@@ -1,21 +1,275 @@
 [
   {
     "id": 101,
-    "title": " Rugged Camping Backpack ",
-    "description": "Heavy duty waterproof bag designed for multi-day mountain hiking trails. Includes hydration compartment.",
+    "title": "Rugged Camping Backpack",
+    "description": "Heavy duty waterproof bag designed for multi-day mountain hiking trails. Includes hydration compartment and multiple zip pockets.",
     "price": 45.99,
     "category": "Outdoor Gear"
   },
   {
-    "id": 102,
-    "title": "Corrupted Product Error Sample",
-    "description": "This record should fail validation because the price is negative.",
-    "price": -12.50,
-    "category": "Testing Failures"
-  },
-  {
     "id": 103,
     "title": "Wireless Charging Pad",
-    "price": 19.99
+    "description": "10W fast wireless charger compatible with all Qi-enabled devices. Slim design with LED indicator and anti-slip surface.",
+    "price": 19.99,
+    "category": "Electronics"
+  },
+  {
+    "id": 104,
+    "title": "Noise Cancelling Bluetooth Headphones",
+    "description": "Over-ear headphones with active noise cancellation, 30-hour battery life, and premium sound drivers. Foldable design for travel.",
+    "price": 89.99,
+    "category": "Electronics"
+  },
+  {
+    "id": 105,
+    "title": "Mechanical Gaming Keyboard",
+    "description": "TKL layout mechanical keyboard with Cherry MX Red switches, RGB backlighting, and aluminum top plate. Anti-ghosting for competitive gaming.",
+    "price": 74.99,
+    "category": "Electronics"
+  },
+  {
+    "id": 106,
+    "title": "4K Webcam with Ring Light",
+    "description": "Ultra HD webcam with built-in ring light, autofocus, and dual microphone noise reduction. Ideal for streaming and video conferencing.",
+    "price": 59.99,
+    "category": "Electronics"
+  },
+  {
+    "id": 107,
+    "title": "Portable Solar Power Bank",
+    "description": "20000mAh solar-powered battery bank with dual USB output and USB-C fast charging. Waterproof casing for outdoor adventures.",
+    "price": 39.99,
+    "category": "Electronics"
+  },
+  {
+    "id": 108,
+    "title": "Trail Running Shoes",
+    "description": "Lightweight trail running shoes with aggressive rubber outsole, cushioned midsole, and breathable mesh upper. Designed for rugged terrain.",
+    "price": 110.00,
+    "category": "Footwear"
+  },
+  {
+    "id": 109,
+    "title": "Waterproof Hiking Boots",
+    "description": "Full-grain leather hiking boots with Gore-Tex waterproof membrane, ankle support, and Vibram outsole. Suitable for all-day trekking.",
+    "price": 149.99,
+    "category": "Footwear"
+  },
+  {
+    "id": 110,
+    "title": "Running Compression Socks",
+    "description": "Graduated compression socks for improved circulation during long runs. Moisture-wicking fabric with arch support and blister protection.",
+    "price": 14.99,
+    "category": "Footwear"
+  },
+  {
+    "id": 111,
+    "title": "Insulated Stainless Steel Water Bottle",
+    "description": "32oz double-wall vacuum insulated bottle keeps drinks cold 24 hours and hot 12 hours. BPA-free with leak-proof lid.",
+    "price": 29.99,
+    "category": "Outdoor Gear"
+  },
+  {
+    "id": 112,
+    "title": "Lightweight Camping Tent",
+    "description": "2-person backpacking tent weighing only 2.3kg. Easy setup with aluminium poles, rainfly, and mesh inner for ventilation.",
+    "price": 129.99,
+    "category": "Outdoor Gear"
+  },
+  {
+    "id": 113,
+    "title": "Trekking Poles Set",
+    "description": "Collapsible aluminium trekking poles with cork handles, wrist straps, and interchangeable tips for different terrain types.",
+    "price": 49.99,
+    "category": "Outdoor Gear"
+  },
+  {
+    "id": 114,
+    "title": "Sleeping Bag 0 Degree Rating",
+    "description": "Mummy-style sleeping bag rated to 0°C with 650-fill goose down insulation. Compression sack included. Weighs 900g.",
+    "price": 159.99,
+    "category": "Outdoor Gear"
+  },
+  {
+    "id": 115,
+    "title": "Yoga Mat with Alignment Lines",
+    "description": "6mm thick non-slip yoga mat with printed alignment lines for proper posture. Made from eco-friendly TPE material. Includes carry strap.",
+    "price": 34.99,
+    "category": "Sports & Fitness"
+  },
+  {
+    "id": 116,
+    "title": "Adjustable Dumbbell Set",
+    "description": "Space-saving adjustable dumbbells ranging from 2.5kg to 25kg per hand. Quick-change dial mechanism with durable steel construction.",
+    "price": 249.99,
+    "category": "Sports & Fitness"
+  },
+  {
+    "id": 117,
+    "title": "Resistance Bands Set",
+    "description": "Set of 5 resistance bands with varying tension levels from 5 to 50 lbs. Includes door anchor, ankle straps, and carry bag.",
+    "price": 24.99,
+    "category": "Sports & Fitness"
+  },
+  {
+    "id": 118,
+    "title": "Foam Roller for Muscle Recovery",
+    "description": "High-density EVA foam roller for deep tissue massage and myofascial release. Textured surface targets trigger points effectively.",
+    "price": 19.99,
+    "category": "Sports & Fitness"
+  },
+  {
+    "id": 119,
+    "title": "Smart Fitness Tracker Band",
+    "description": "Fitness band with heart rate monitor, sleep tracking, SpO2 sensor, and 7-day battery life. Water-resistant to 50m with AMOLED display.",
+    "price": 49.99,
+    "category": "Electronics"
+  },
+  {
+    "id": 120,
+    "title": "Men's Merino Wool Base Layer",
+    "description": "Lightweight 150gsm merino wool long-sleeve top with odour resistance and natural temperature regulation. Ideal for hiking and skiing.",
+    "price": 64.99,
+    "category": "Clothing"
+  },
+  {
+    "id": 121,
+    "title": "Women's Waterproof Shell Jacket",
+    "description": "3-layer waterproof and windproof shell jacket with sealed seams, pit zips, and helmet-compatible hood. Packable into chest pocket.",
+    "price": 189.99,
+    "category": "Clothing"
+  },
+  {
+    "id": 122,
+    "title": "Fleece Midlayer Pullover",
+    "description": "300-weight fleece pullover with half-zip collar and kangaroo pocket. Warm, breathable, and quick-drying for cold weather layering.",
+    "price": 54.99,
+    "category": "Clothing"
+  },
+  {
+    "id": 123,
+    "title": "Convertible Hiking Pants",
+    "description": "Zip-off hiking pants with UPF 50+ sun protection, multiple cargo pockets, and articulated knees. Quick-dry nylon fabric.",
+    "price": 59.99,
+    "category": "Clothing"
+  },
+  {
+    "id": 124,
+    "title": "Thermal Beanie Hat",
+    "description": "Windproof thermal beanie with fleece lining and reflective logo. Stretchy one-size-fits-all design for winter outdoor activities.",
+    "price": 19.99,
+    "category": "Clothing"
+  },
+  {
+    "id": 125,
+    "title": "Air Purifier HEPA Filter",
+    "description": "True HEPA air purifier covering up to 500 sq ft. Removes 99.97% of airborne particles including dust, pollen, and pet dander.",
+    "price": 99.99,
+    "category": "Home Appliances"
+  },
+  {
+    "id": 126,
+    "title": "Robot Vacuum Cleaner",
+    "description": "Smart robot vacuum with LiDAR mapping, 2500Pa suction, and automatic dirt disposal. Compatible with Alexa and Google Home.",
+    "price": 299.99,
+    "category": "Home Appliances"
+  },
+  {
+    "id": 127,
+    "title": "Portable Blender Bottle",
+    "description": "USB rechargeable personal blender with 400ml BPA-free bottle. 6 stainless steel blades for smoothies and protein shakes on the go.",
+    "price": 29.99,
+    "category": "Home Appliances"
+  },
+  {
+    "id": 128,
+    "title": "Electric Kettle 1.7L",
+    "description": "1500W electric kettle with temperature control settings for different beverages. Keep-warm function and boil-dry protection. BPA-free.",
+    "price": 44.99,
+    "category": "Home Appliances"
+  },
+  {
+    "id": 129,
+    "title": "Standing Desk Converter",
+    "description": "Height-adjustable desk riser with dual monitor support and keyboard tray. Smooth gas spring lift mechanism. Holds up to 15kg.",
+    "price": 119.99,
+    "category": "Home Office"
+  },
+  {
+    "id": 130,
+    "title": "Ergonomic Lumbar Support Cushion",
+    "description": "Memory foam lumbar cushion with adjustable strap for office chairs and car seats. Promotes correct spinal alignment during long sitting sessions.",
+    "price": 34.99,
+    "category": "Home Office"
+  },
+  {
+    "id": 131,
+    "title": "USB-C 7-in-1 Hub",
+    "description": "Compact USB-C hub with 4K HDMI, 100W PD charging, 3x USB-A 3.0, SD and microSD card reader. Aluminium shell with braided cable.",
+    "price": 39.99,
+    "category": "Electronics"
+  },
+  {
+    "id": 132,
+    "title": "Blue Light Blocking Glasses",
+    "description": "Anti blue light glasses with CR39 lenses and lightweight TR90 frame. Reduces eye strain and improves sleep quality for screen users.",
+    "price": 24.99,
+    "category": "Home Office"
+  },
+  {
+    "id": 133,
+    "title": "Whey Protein Powder Chocolate",
+    "description": "25g protein per serving whey concentrate powder for muscle building and recovery. Chocolate flavour, low sugar, no artificial colours. 1kg tub with 33 servings.",
+    "price": 39.99,
+    "category": "Nutrition"
+  },
+  {
+    "id": 134,
+    "title": "Creatine Monohydrate Powder",
+    "description": "Unflavoured micronised creatine monohydrate for strength, power output, and muscle building. 3g per serving, 100 servings per 300g container.",
+    "price": 19.99,
+    "category": "Nutrition"
+  },
+  {
+    "id": 135,
+    "title": "Electrolyte Hydration Tablets",
+    "description": "Zero-calorie effervescent electrolyte tablets with sodium, potassium, and magnesium. 20 tablets per tube, tropical flavour.",
+    "price": 9.99,
+    "category": "Nutrition"
+  },
+  {
+    "id": 136,
+    "title": "Camping Headlamp 350 Lumens",
+    "description": "Rechargeable LED headlamp with 350 lumen output, red night vision mode, and IPX4 water resistance. Runtime up to 10 hours.",
+    "price": 34.99,
+    "category": "Outdoor Gear"
+  },
+  {
+    "id": 137,
+    "title": "Pocket Knife Multitool",
+    "description": "Stainless steel multitool with 12 functions including knife, pliers, screwdriver, bottle opener, and saw. Nylon belt pouch included.",
+    "price": 27.99,
+    "category": "Outdoor Gear"
+  },
+  {
+    "id": 138,
+    "title": "Swim Goggles Anti-Fog",
+    "description": "Competition swimming goggles with anti-fog UV-protected lenses, adjustable nose bridge, and silicone gaskets for watertight seal.",
+    "price": 17.99,
+    "category": "Sports & Fitness"
+  },
+  {
+    "id": 139,
+    "title": "Jump Rope Speed Cable",
+    "description": "Aluminium handle speed jump rope with adjustable 3m steel cable. Ball bearing system for smooth rotation. Ideal for cardio and CrossFit.",
+    "price": 14.99,
+    "category": "Sports & Fitness"
+  },
+  {
+    "id": 140,
+    "title": "Laptop Sleeve 15 Inch",
+    "description": "Water-resistant neoprene laptop sleeve with accessory pocket and handle. Fits laptops up to 15.6 inches. Available in multiple colours.",
+    "price": 19.99,
+    "category": "Home Office"
   }
 ]
