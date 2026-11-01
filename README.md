@@ -122,7 +122,22 @@ Fusing ranks instead of scores avoids calibrating cosine similarity against BM25
 - **Fail-open with a circuit breaker:** each Redis call has a 250 ms budget; after a failure the cache is bypassed for 30 s, so an outage costs one timeout rather than one per request
 - Measured locally: cache hit ≈ 1.5–11 ms end-to-end vs ≈ 300–950 ms for a full search + LLM request
 
-### 5. CPU-Only Embedding (FastEmbed)
+### 5. Query Understanding & Hard Filters
+Shoppers write constraints into the query: "grey area rug under $150", "desk lamp 4.5+ stars". `query_parser.py` turns them into structured filters and removes them from the text used for retrieval:
+
+```
+"grey area rug under $150"                    → text "grey area rug",     max_price 150
+"coffee table between $200 and $400"          → text "coffee table",      min_price 200, max_price 400
+"desk lamp 4.5+ stars"                        → text "desk lamp",         min_rating 4.5
+```
+
+- **Rules, not an LLM.** Price and rating constraints are numeric patterns, so rules are instant, free, deterministic and unit-testable, with no dependency on a rate-limited API. They're strict because a false positive silently hides good products. A number is a price only with a currency marker or directly after a price phrase, and never when followed by a unit ("48 inch vanity", "5 drawer dresser"). Positional words don't trigger ("twin **over** full bunk beds", "end table **between** recliners"). A test asserts that **none of the 480 real WANDS queries** produces a constraint.
+- **Categories are not guessed from text.** A wrong category filter hides good results, and ranking already handles category meaning. Categories come from explicit facet filters (UI controls), populated from Qdrant's facet API (`GET /api/v1/facets`).
+- **Pre-filtering, not post-filtering.** The Qdrant filter is applied inside each prefetch leg, so dense and BM25 each return their best *matching* candidates before fusion. Filtering after fusion would leave gaps (see the benchmark below).
+- **Explicit filters override parsed ones** field by field, and the response reports `interpreted_query` and `applied_filters` so the UI can show what was searched. Filters are part of the cache key. The LLM is told which filters were applied, so it doesn't refuse with "I can't confirm the price".
+- Products without a rating never match a rating filter: an unknown rating isn't evidence of a good one.
+
+### 6. CPU-Only Embedding (FastEmbed)
 FastEmbed runs ONNX-optimized models locally with zero GPU requirement:
 - Dense: `BAAI/bge-small-en-v1.5` (384-dim, ~67MB)
 - Sparse: `Qdrant/bm25` (statistical, near-zero cost)
@@ -207,8 +222,19 @@ The suite uses Qdrant's local mode and the real embedding models, so it does not
 Hybrid semantic + keyword search. Returns ranked products with RRF scores.
 
 ```json
-Request:  {"q": "mid-century modern coffee table", "limit": 5}
-Response: {"results": [...], "latency_ms": 45.2}
+Request:  {"q": "grey area rug under $150", "limit": 5,
+           "filters": {"categories": ["Rugs"], "min_rating": 4},   // optional, overrides parsed values
+           "parse_filters": true}                                  // optional, default true
+Response: {"results": [...], "latency_ms": 45.2,
+           "interpreted_query": "grey area rug",
+           "applied_filters": {"min_price": null, "max_price": 150.0, "categories": ["Rugs"], "min_rating": 4.0}}
+```
+
+### GET /api/v1/facets?key=category
+Distinct values with counts for filter dropdowns (`key`: `category` or `product_class`).
+
+```json
+Response: {"key": "category", "values": [{"value": "Furniture", "count": 16039}, ...]}
 ```
 
 ### POST /api/v1/ask
@@ -225,9 +251,12 @@ Response: {
     "search_ms": 22.4,
     "llm_ms": 210.5,
     "total_ms": 234.1
-  }
+  },
+  "interpreted_query": "mid-century modern coffee table",
+  "applied_filters": {...}
 }
 ```
+`/ask` accepts the same `filters` and `parse_filters` fields as `/search`.
 
 ---
 
@@ -261,6 +290,22 @@ Paired difference vs dense: **hybrid nDCG@10 +0.052 [+0.036, +0.068]**, Recall@1
 - **Duplicate judgments:** 1,467 (query, product) pairs are judged more than once and 14 disagree; the highest label is kept.
 - **Top-10 vs depth-100:** top-10 metrics come from a `limit=10` search with the production settings; Recall@100 comes from a separate `limit=100` search.
 - **Search latency** excludes query embedding and is measured on a laptop with Qdrant in Docker.
+
+### Price-constrained retrieval (filters)
+
+```bash
+python -m src.evaluation.filter_eval --split test
+```
+
+WANDS queries never state a budget, so the benchmark adds one. For each test query with at least one Exact judgment, the budget **X = median synthetic price of its Exact products** (about half of them fit), and the query becomes "*query* under $X". A product counts as relevant only if it's judged relevant **and** priced ≤ X. All three systems use the same hybrid retrieval:
+
+| System (237 test queries) | nDCG@10 (budget-aware) | Over-budget results | Slots filled (of 10) |
+|---|---|---|---|
+| No parsing: search the raw text, no filter (previous behaviour) | 0.297 [0.268, 0.328] | 50.5% | 10.0 |
+| Post-filter: parse, search, then drop over-budget results | 0.388 [0.352, 0.423] | 0.0% | 4.9 |
+| **Pre-filter: parse, filter inside each prefetch (this system)** | **0.554 [0.506, 0.599]** | **0.0%** | **10.0** |
+
+Pre-filtering vs no parsing: **+0.257 nDCG@10** [+0.227, +0.288]; vs post-filtering: **+0.165** [+0.144, +0.189]. Without parsing, half of what's shown is over budget. Post-filtering never violates the budget but leaves half the page empty. Prices are synthetic, so this measures filter mechanics, not real-world price behaviour.
 
 ### Cross-encoder reranking: tested, not enabled
 
@@ -359,7 +404,9 @@ ecommerce-rag-engine/
 
 │   │   └── services/
 
-│   │       ├── search.py     # Hybrid search + RRF
+│   │       ├── search.py     # Hybrid search + RRF + payload filters + facets
+
+│   │       ├── query_parser.py  # "under $300", "4+ stars" → SearchFilters
 
 │   │       ├── rerank.py     # Optional cross-encoder reranker (off by default)
 
@@ -384,6 +431,8 @@ ecommerce-rag-engine/
 │       ├── stats.py          # Bootstrap CIs + paired differences
 
 │       ├── retrieval_eval.py # WANDS benchmark: dense vs BM25 vs hybrid
+
+│       ├── filter_eval.py    # Price-constrained benchmark: no parsing vs post- vs pre-filter
 
 │       ├── ground_truth.json # 15 queries for the demo catalog
 
@@ -410,7 +459,7 @@ ecommerce-rag-engine/
 - **Answer quality isn't measured yet**: retrieval is benchmarked on WANDS, but answers aren't. An LLM-judge check of answers against the retrieved context is planned.
 - **No reranker**: cross-encoder reranking was evaluated and left off (gain not significant on dev, about +0.7–1.0 s per query on CPU); see above.
 - **Over-strict refusals**: the prompt tells the model to refuse when the context lacks a requested detail. For example, "grey area rug 8x10" retrieves grey rugs, but size isn't among the attributes passed to the LLM, so it refuses.
-- **No filters yet**: payload indexes exist, but query parsing into filters ("under $200", category) isn't implemented, so constraints aren't enforced by retrieval.
+- **Constraint parsing covers price and rating only**, in English patterns. Categories aren't inferred from text (by design), and other attributes ("8x10", "walnut") are left to ranking rather than enforced as filters.
 - **Incomplete judgments**: about 20% of top-10 results have no WANDS judgment and count as irrelevant, so absolute scores are pessimistic.
 - **Embedding model**: `bge-small-en-v1.5` is optimized for speed. `bge-large-en-v1.5` or `text-embedding-3-large` would improve semantic retrieval quality at higher compute cost.
 - **Sparse model**: BM25 is statistical. Upgrading to SPLADE neural sparse model would improve keyword expansion for ambiguous queries.

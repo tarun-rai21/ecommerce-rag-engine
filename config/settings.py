@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     CACHE_OP_TIMEOUT_SECONDS: float = Field(default=0.25, gt=0)
     CACHE_COOLDOWN_SECONDS: float = Field(default=30.0, ge=0)
     # Bump whenever the index or response format changes so stale entries are never served.
-    CACHE_VERSION: str = "v2"
+    CACHE_VERSION: str = "v3"  # v3: WANDS index + filters in the response
 
     model_config = {
         "env_file": ".env",

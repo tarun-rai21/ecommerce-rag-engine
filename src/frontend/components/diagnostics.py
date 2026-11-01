@@ -52,6 +52,7 @@ def render_diagnostics(timing: dict, retrieved_products: list[dict]) -> None:
                     "Title": product.get("title", ""),
                     "Category": product.get("category", ""),
                     "Price ($)": product.get("price", 0.0),
+                    "Rating": product.get("rating"),
                     "RRF Score": round(product.get("rrf_score", 0.0), 6),
                 })
             df = pd.DataFrame(rows)

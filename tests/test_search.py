@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 from qdrant_client import AsyncQdrantClient
 
-from src.backend.services.search import ProductSearchService, rrf_fuse
+from src.backend.services.query_parser import SearchFilters
+from src.backend.services.search import ProductSearchService, build_qdrant_filter, rrf_fuse
 from tests.conftest import COLLECTION
 
 
@@ -82,6 +83,38 @@ def test_hybrid_can_return_more_than_prefetch_limit(indexed_path, embedder, serv
 def test_unknown_mode_rejected(services):
     with pytest.raises(ValueError):
         asyncio.run(services[0].search("x", mode="bogus"))
+
+
+@pytest.mark.parametrize("native", [True, False])
+def test_price_and_category_filters_hold_for_every_result(indexed_path, embedder, services, native):
+    svc = services[0] if native else services[1]
+    f = SearchFilters(max_price=30, categories=["Outdoor Gear", "Electronics"])
+    results = asyncio.run(svc.search("gear for camping trips", limit=10, filters=f))
+    assert results, "filtered search returned nothing"
+    assert all(r["price"] <= 30 and r["category"] in f.categories for r in results)
+    # Without the filter, the same query does return products outside the constraint.
+    unfiltered = asyncio.run(svc.search("gear for camping trips", limit=10))
+    assert any(r["price"] > 30 or r["category"] not in f.categories for r in unfiltered)
+
+
+def test_filtered_search_fills_limit_when_enough_matches(services):
+    # Filter is applied inside each prefetch, so the page fills up even though many
+    # of the best unfiltered matches are excluded.
+    results = asyncio.run(services[0].search("outdoor", limit=10, filters=SearchFilters(max_price=40)))
+    assert len(results) == 10 and all(r["price"] <= 40 for r in results)
+
+
+def test_rating_filter_excludes_unrated_products(services):
+    # The 39 sample products have no ratings: an unknown rating never satisfies a minimum.
+    assert asyncio.run(services[0].search("chair", limit=5, filters=SearchFilters(min_rating=1))) == []
+
+
+def test_build_qdrant_filter():
+    assert build_qdrant_filter(None) is None and build_qdrant_filter(SearchFilters()) is None
+    f = build_qdrant_filter(SearchFilters(min_price=10, max_price=20, categories=["Rugs"], min_rating=4))
+    keys = [c.key for c in f.must]
+    assert keys == ["price", "category", "rating"]
+    assert f.must[0].range.gte == 10 and f.must[0].range.lte == 20
 
 
 def test_query_uses_query_encoder(embedder):

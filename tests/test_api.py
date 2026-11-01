@@ -11,15 +11,20 @@ from src.backend.services.llm import LLMResult, UNAVAILABLE_MESSAGE
 class FakeSearch:
     def __init__(self, n_results: int = 20):
         self.limits: list[int] = []
+        self.calls: list[dict] = []
         self.n_results = n_results
 
-    async def search(self, query, limit=5):
+    async def search(self, query, limit=5, mode=None, filters=None):
         self.limits.append(limit)
+        self.calls.append({"query": query, "filters": filters})
         return [
             {"id": str(100 + i), "score": 1 / (60 + i + 1), "title": f"P{i}",
              "description": "d", "price": 9.99, "category": "c"}
             for i in range(min(limit, self.n_results))
         ]
+
+    async def facet_counts(self, key="category", limit=100):
+        return [{"value": "Furniture", "count": 3}, {"value": "Rugs", "count": 1}][:limit]
 
 
 class FakeRedis:
@@ -42,10 +47,11 @@ class FakeRedis:
 
 class FakeLLM:
     def __init__(self, ok: bool = True):
-        self.ok, self.calls = ok, 0
+        self.ok, self.calls, self.contexts = ok, 0, []
 
     async def generate_answer(self, query, context):
         self.calls += 1
+        self.contexts.append(context)
         return LLMResult("answer", True) if self.ok else LLMResult(UNAVAILABLE_MESSAGE, False)
 
 
@@ -122,3 +128,52 @@ def test_limit_is_respected(make_client, path):
 def test_invalid_requests_rejected(make_client, body):
     c = make_client()
     assert c.post("/api/v1/search", json=body).status_code == 422
+
+
+# ── Filters ───────────────────────────────────────────────
+def test_constraints_parsed_from_text_become_filters(make_client):
+    search, llm = FakeSearch(), FakeLLM()
+    c = make_client(search=search, llm=llm)
+    r = c.post("/api/v1/ask", json={"q": "grey area rug under $300", "limit": 3}).json()
+    call = search.calls[-1]
+    assert call["query"] == "grey area rug" and call["filters"].max_price == 300
+    assert r["interpreted_query"] == "grey area rug" and r["applied_filters"]["max_price"] == 300
+    assert "price at most $300.00" in llm.contexts[-1]
+
+
+def test_explicit_filters_override_parsed(make_client):
+    search = FakeSearch()
+    c = make_client(search=search)
+    body = {"q": "rug under $300", "filters": {"max_price": 150, "categories": ["Rugs"]}}
+    r = c.post("/api/v1/search", json=body).json()
+    f = search.calls[-1]["filters"]
+    assert f.max_price == 150 and f.categories == ["Rugs"]
+    assert r["applied_filters"]["max_price"] == 150
+
+
+def test_parse_filters_can_be_disabled(make_client):
+    search = FakeSearch()
+    c = make_client(search=search)
+    c.post("/api/v1/search", json={"q": "rug under $300", "parse_filters": False})
+    assert search.calls[-1]["query"] == "rug under $300" and search.calls[-1]["filters"].is_empty()
+
+
+def test_different_filters_do_not_share_cache(make_client):
+    llm = FakeLLM()
+    c = make_client(llm=llm)
+    c.post("/api/v1/ask", json={"q": "rug", "filters": {"max_price": 100}})
+    r = c.post("/api/v1/ask", json={"q": "rug", "filters": {"max_price": 200}}).json()
+    assert r["source"] == "llm" and llm.calls == 2
+
+
+def test_invalid_filter_range_rejected(make_client):
+    c = make_client()
+    r = c.post("/api/v1/search", json={"q": "rug", "filters": {"min_price": 500, "max_price": 100}})
+    assert r.status_code == 422
+
+
+def test_facets_endpoint(make_client):
+    c = make_client()
+    r = c.get("/api/v1/facets", params={"key": "category"}).json()
+    assert r["key"] == "category" and r["values"][0] == {"value": "Furniture", "count": 3}
+    assert c.get("/api/v1/facets", params={"key": "description"}).status_code == 422

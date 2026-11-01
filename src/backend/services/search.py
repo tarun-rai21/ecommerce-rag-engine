@@ -7,9 +7,14 @@ from qdrant_client.models import (
     Prefetch,
     RrfQuery,
     Rrf,
+    FieldCondition,
+    Filter,
+    MatchAny,
+    Range,
 )
 
 from config.settings import settings
+from src.backend.services.query_parser import SearchFilters
 from src.backend.services.rerank import RerankerService
 from src.ingestion.embedder import ProductEmbedder
 
@@ -89,15 +94,21 @@ class ProductSearchService:
 
     # ── Native Qdrant RRF (one round trip) ────────────────
     async def _native_fusion_search(
-        self, dense_vector: list[float], sparse_vector: SparseVector, limit: int
+        self, dense_vector: list[float], sparse_vector: SparseVector, limit: int,
+        qfilter: Filter | None = None,
     ) -> list[dict]:
+        # The filter goes inside each prefetch so every leg returns `prefetch` matching
+        # candidates; filtering only after fusion could leave fewer than `limit` results.
         results = await self.client.query_points(
             collection_name=self.collection_name,
             prefetch=[
-                Prefetch(query=dense_vector, using=DENSE_VECTOR_NAME, limit=self._prefetch(limit)),
-                Prefetch(query=sparse_vector, using=SPARSE_VECTOR_NAME, limit=self._prefetch(limit)),
+                Prefetch(query=dense_vector, using=DENSE_VECTOR_NAME,
+                         limit=self._prefetch(limit), filter=qfilter),
+                Prefetch(query=sparse_vector, using=SPARSE_VECTOR_NAME,
+                         limit=self._prefetch(limit), filter=qfilter),
             ],
             query=RrfQuery(rrf=Rrf(k=self.rrf_k)),
+            query_filter=qfilter,
             limit=limit + TIE_SLACK,
             with_payload=True,
         )
@@ -106,13 +117,15 @@ class ProductSearchService:
 
     # ── Client-side RRF (two parallel queries) ────────────
     async def _python_fusion_search(
-        self, dense_vector: list[float], sparse_vector: SparseVector, limit: int
+        self, dense_vector: list[float], sparse_vector: SparseVector, limit: int,
+        qfilter: Filter | None = None,
     ) -> list[dict]:
         dense_hits, sparse_hits = await asyncio.gather(
             self.client.query_points(
                 collection_name=self.collection_name,
                 query=dense_vector,
                 using=DENSE_VECTOR_NAME,
+                query_filter=qfilter,
                 limit=self._prefetch(limit),
                 with_payload=True,
             ),
@@ -120,6 +133,7 @@ class ProductSearchService:
                 collection_name=self.collection_name,
                 query=sparse_vector,
                 using=SPARSE_VECTOR_NAME,
+                query_filter=qfilter,
                 limit=self._prefetch(limit),
                 with_payload=True,
             ),
@@ -128,11 +142,12 @@ class ProductSearchService:
         return [_to_result(pid, score, payload) for pid, score, payload in fused]
 
     # ── Single-retriever search (baselines) ───────────────
-    async def _single_search(self, vector, using: str, limit: int) -> list[dict]:
+    async def _single_search(self, vector, using: str, limit: int, qfilter: Filter | None = None) -> list[dict]:
         results = await self.client.query_points(
             collection_name=self.collection_name,
             query=vector,
             using=using,
+            query_filter=qfilter,
             limit=limit + TIE_SLACK,
             with_payload=True,
         )
@@ -141,32 +156,63 @@ class ProductSearchService:
         return [_to_result(hit.id, hit.score, hit.payload or {}) for hit in hits]
 
     # ── Public Entry Point ────────────────────────────────
-    async def search(self, query: str, limit: int = 5, mode: SearchMode | None = None) -> list[dict]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 5,
+        mode: SearchMode | None = None,
+        filters: SearchFilters | None = None,
+    ) -> list[dict]:
         """mode: 'hybrid' (dense + BM25 fused with RRF), 'hybrid_rerank' (hybrid, then
         a cross-encoder reorders the top candidates), or 'dense' / 'sparse' alone
         (evaluation baselines). Default: 'hybrid_rerank' if a reranker is configured,
-        else 'hybrid'."""
+        else 'hybrid'.
+
+        filters: hard constraints applied as Qdrant payload filters (every result
+        satisfies them). Parse them from text first with query_parser.parse_query."""
         mode = mode or ("hybrid_rerank" if self.reranker else "hybrid")
         if mode not in ("hybrid", "hybrid_rerank", "dense", "sparse"):
             raise ValueError(f"Unknown search mode: {mode!r}")
         if mode == "hybrid_rerank" and self.reranker is None:
             raise ValueError("mode 'hybrid_rerank' needs a reranker")
+        qfilter = build_qdrant_filter(filters)
 
         dense_vector, sparse = await self._vectorize_query(query)
         sparse_vector = SparseVector(indices=sparse["indices"], values=sparse["values"])
 
         if mode == "dense":
-            results = await self._single_search(dense_vector, DENSE_VECTOR_NAME, limit)
+            results = await self._single_search(dense_vector, DENSE_VECTOR_NAME, limit, qfilter)
         elif mode == "sparse":
-            results = await self._single_search(sparse_vector, SPARSE_VECTOR_NAME, limit)
+            results = await self._single_search(sparse_vector, SPARSE_VECTOR_NAME, limit, qfilter)
         else:
             fetch = max(limit, self.reranker.candidates) if mode == "hybrid_rerank" else limit
             if self.use_native_fusion:
-                results = await self._native_fusion_search(dense_vector, sparse_vector, fetch)
+                results = await self._native_fusion_search(dense_vector, sparse_vector, fetch, qfilter)
             else:
-                results = await self._python_fusion_search(dense_vector, sparse_vector, fetch)
+                results = await self._python_fusion_search(dense_vector, sparse_vector, fetch, qfilter)
             if mode == "hybrid_rerank":
                 results = (await self.reranker.rerank(query, results)).results[:limit]
 
         logger.debug(f"{mode} search returned {len(results)} results for query: '{query}'")
         return results
+
+    # ── Facets (for filter UIs) ───────────────────────────
+    async def facet_counts(self, key: str = "category", limit: int = 100) -> list[dict]:
+        """Distinct payload values with counts, e.g. categories for a filter dropdown."""
+        response = await self.client.facet(collection_name=self.collection_name, key=key, limit=limit)
+        return [{"value": hit.value, "count": hit.count} for hit in response.hits]
+
+
+def build_qdrant_filter(filters: SearchFilters | None) -> Filter | None:
+    """SearchFilters → Qdrant Filter. Products with no rating never match a rating
+    filter (an unknown rating isn't evidence of a good one)."""
+    if filters is None or filters.is_empty():
+        return None
+    must: list[FieldCondition] = []
+    if filters.min_price is not None or filters.max_price is not None:
+        must.append(FieldCondition(key="price", range=Range(gte=filters.min_price, lte=filters.max_price)))
+    if filters.categories:
+        must.append(FieldCondition(key="category", match=MatchAny(any=filters.categories)))
+    if filters.min_rating is not None:
+        must.append(FieldCondition(key="rating", range=Range(gte=filters.min_rating)))
+    return Filter(must=must)
