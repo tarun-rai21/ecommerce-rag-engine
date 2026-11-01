@@ -4,8 +4,8 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     SparseVector,
     Prefetch,
-    FusionQuery,
-    Fusion,
+    RrfQuery,
+    Rrf,
 )
 
 from config.settings import settings
@@ -13,139 +13,111 @@ from src.ingestion.embedder import ProductEmbedder
 
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
-RRF_K = 60
+
+
+def rrf_fuse(ranked_lists: list[list], k: int, limit: int) -> list[tuple[object, float, dict]]:
+    """Reciprocal Rank Fusion: score(d) = Σ_m 1 / (k + rank_m(d)), rank starting at 1.
+
+    Each input list holds Qdrant points (``.id``, ``.payload``) in rank order.
+    Returns (point_id, score, payload) sorted by score, ties broken by first appearance.
+    """
+    scores: dict[object, float] = {}
+    payloads: dict[object, dict] = {}
+    for hits in ranked_lists:
+        for rank, hit in enumerate(hits, start=1):
+            scores[hit.id] = scores.get(hit.id, 0.0) + 1.0 / (k + rank)
+            payloads.setdefault(hit.id, hit.payload or {})
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:limit]
+    return [(doc_id, score, payloads[doc_id]) for doc_id, score in ranked]
+
+
+def _to_result(point_id: object, score: float, payload: dict) -> dict:
+    # Expose the catalog's product_id; fall back to the Qdrant point id for older points.
+    return {**payload, "id": payload.get("product_id", point_id), "score": score}
 
 
 class ProductSearchService:
-    def __init__(self) -> None:
-        self.client = AsyncQdrantClient(
+    def __init__(
+        self,
+        client: AsyncQdrantClient | None = None,
+        embedder: ProductEmbedder | None = None,
+        collection_name: str | None = None,
+        rrf_k: int | None = None,
+        prefetch_limit: int | None = None,
+        use_native_fusion: bool | None = None,
+    ) -> None:
+        self.client = client or AsyncQdrantClient(
             host=settings.QDRANT_HOST,
             grpc_port=settings.QDRANT_GRPC_PORT,
             prefer_grpc=True,
         )
-        self.embedder = ProductEmbedder()
+        self.embedder = embedder or ProductEmbedder()
+        self.collection_name = collection_name or settings.COLLECTION_NAME
+        self.rrf_k = rrf_k or settings.RRF_K
+        self.prefetch_limit = prefetch_limit or settings.PREFETCH_LIMIT
+        self.use_native_fusion = (
+            settings.USE_NATIVE_FUSION if use_native_fusion is None else use_native_fusion
+        )
 
     async def close(self) -> None:
         await self.client.close()
 
     # ── Vector Generation ─────────────────────────────────
-    async def _vectorize_query(
-        self, query: str
-    ) -> tuple[list[float], dict]:
-        dense_vectors, sparse_vectors = await asyncio.to_thread(
-            self.embedder.embed_text_chunks, [query]
-        )
-        return dense_vectors[0].tolist(), sparse_vectors[0]
+    async def _vectorize_query(self, query: str) -> tuple[list[float], dict]:
+        # ONNX inference is CPU-bound; keep it off the event loop.
+        return await asyncio.to_thread(self.embedder.embed_query, query)
 
-    # ── RRF Python Fallback ───────────────────────────────
-    def _rrf_fusion(
-        self,
-        dense_hits: list,
-        sparse_hits: list,
-        limit: int,
-    ) -> list[dict]:
-        scores: dict[str | int, float] = {}
-        payloads: dict[str | int, dict] = {}
-
-        for rank, hit in enumerate(dense_hits):
-            doc_id = hit.id
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (RRF_K + rank + 1)
-            payloads[doc_id] = hit.payload
-
-        for rank, hit in enumerate(sparse_hits):
-            doc_id = hit.id
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (RRF_K + rank + 1)
-            if doc_id not in payloads:
-                payloads[doc_id] = hit.payload
-
-        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:limit]
-        return [
-            {"id": doc_id, "score": score, **payloads[doc_id]}
-            for doc_id, score in ranked
-        ]
-
-    # ── Native Qdrant RRF ─────────────────────────────────
+    # ── Native Qdrant RRF (one round trip) ────────────────
     async def _native_fusion_search(
-        self,
-        dense_vector: list[float],
-        sparse_vector: dict,
-        limit: int,
+        self, dense_vector: list[float], sparse_vector: SparseVector, limit: int
     ) -> list[dict]:
-        prefetch = [
-            Prefetch(
-                query=dense_vector,
-                using=DENSE_VECTOR_NAME,
-                limit=20,
-            ),
-            Prefetch(
-                query=SparseVector(
-                    indices=sparse_vector["indices"],
-                    values=sparse_vector["values"],
-                ),
-                using=SPARSE_VECTOR_NAME,
-                limit=20,
-            ),
-        ]
-
         results = await self.client.query_points(
-            collection_name=settings.COLLECTION_NAME,
-            prefetch=prefetch,
-            query=FusionQuery(fusion=Fusion.RRF),
+            collection_name=self.collection_name,
+            prefetch=[
+                Prefetch(query=dense_vector, using=DENSE_VECTOR_NAME, limit=self.prefetch_limit),
+                Prefetch(query=sparse_vector, using=SPARSE_VECTOR_NAME, limit=self.prefetch_limit),
+            ],
+            query=RrfQuery(rrf=Rrf(k=self.rrf_k)),
             limit=limit,
             with_payload=True,
         )
+        return [_to_result(hit.id, hit.score, hit.payload or {}) for hit in results.points]
 
-        return [
-            {"id": hit.id, "score": hit.score, **hit.payload}
-            for hit in results.points
-        ]
-
-    # ── Fallback: parallel query_points ──────────────────
-    async def _fallback_fusion_search(
-        self,
-        dense_vector: list[float],
-        sparse_vector: dict,
-        limit: int,
+    # ── Client-side RRF (two parallel queries) ────────────
+    async def _python_fusion_search(
+        self, dense_vector: list[float], sparse_vector: SparseVector, limit: int
     ) -> list[dict]:
         dense_hits, sparse_hits = await asyncio.gather(
             self.client.query_points(
-                collection_name=settings.COLLECTION_NAME,
+                collection_name=self.collection_name,
                 query=dense_vector,
                 using=DENSE_VECTOR_NAME,
-                limit=20,
+                limit=self.prefetch_limit,
                 with_payload=True,
             ),
             self.client.query_points(
-                collection_name=settings.COLLECTION_NAME,
-                query=SparseVector(
-                    indices=sparse_vector["indices"],
-                    values=sparse_vector["values"],
-                ),
+                collection_name=self.collection_name,
+                query=sparse_vector,
                 using=SPARSE_VECTOR_NAME,
-                limit=20,
+                limit=self.prefetch_limit,
                 with_payload=True,
             ),
         )
-
-        return self._rrf_fusion(
-            dense_hits.points,
-            sparse_hits.points,
-            limit,
-        )
+        fused = rrf_fuse([dense_hits.points, sparse_hits.points], k=self.rrf_k, limit=limit)
+        return [_to_result(pid, score, payload) for pid, score, payload in fused]
 
     # ── Public Entry Point ────────────────────────────────
     async def search(self, query: str, limit: int = 5) -> list[dict]:
-        dense_vector, sparse_vector = await self._vectorize_query(query)
+        dense_vector, sparse = await self._vectorize_query(query)
+        sparse_vector = SparseVector(indices=sparse["indices"], values=sparse["values"])
 
-        try:
-            results = await self._native_fusion_search(
-                dense_vector, sparse_vector, limit
-            )
-            logger.info(f"Native RRF fusion used for query: '{query}'")
-        except Exception as e:
-            logger.warning(f"Native fusion failed ({e}), falling back to Python RRF.")
-            results = await self._fallback_fusion_search(
-                dense_vector, sparse_vector, limit
-            )
+        if self.use_native_fusion:
+            results = await self._native_fusion_search(dense_vector, sparse_vector, limit)
+        else:
+            results = await self._python_fusion_search(dense_vector, sparse_vector, limit)
 
+        logger.info(
+            f"Hybrid search ({'native' if self.use_native_fusion else 'python'} RRF, "
+            f"k={self.rrf_k}) returned {len(results)} results for query: '{query}'"
+        )
         return results

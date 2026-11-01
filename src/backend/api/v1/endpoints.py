@@ -1,6 +1,7 @@
 import time
 from fastapi import APIRouter, Depends, Request
 from loguru import logger
+from pydantic import ValidationError
 
 from src.backend.models.api_schemas import (
     SearchQueryRequest,
@@ -12,9 +13,13 @@ from src.backend.models.api_schemas import (
 )
 from src.backend.services.search import ProductSearchService
 from src.backend.services.cache import CacheService
-from src.backend.services.llm import LLMService
+from src.backend.services.llm import LLMService, REFUSAL_MESSAGE
 
 router = APIRouter()
+
+
+def _ms(start: float) -> float:
+    return round((time.perf_counter() - start) * 1000, 2)
 
 
 # ── Dependency Injection ──────────────────────────────────
@@ -30,6 +35,16 @@ def get_llm_service(request: Request) -> LLMService:
     return request.app.state.llm_service
 
 
+def build_context(results: list[dict]) -> str:
+    return "\n".join(
+        f"- Title: {r.get('title', '')} | "
+        f"Category: {r.get('category', '')} | "
+        f"Price: ${float(r.get('price', 0.0)):.2f} | "
+        f"Description: {r.get('description', '')}"
+        for r in results
+    )
+
+
 # ── /search Endpoint ──────────────────────────────────────
 @router.post("/search", response_model=SearchResponseEnvelope)
 async def search_products(
@@ -37,13 +52,7 @@ async def search_products(
     service: ProductSearchService = Depends(get_search_service),
 ) -> SearchResponseEnvelope:
     start = time.perf_counter()
-
-    raw_results = await service.search(
-        query=request.q,
-        limit=request.limit,
-    )
-
-    latency_ms = (time.perf_counter() - start) * 1000
+    raw_results = await service.search(query=request.q, limit=request.limit)
 
     results = [
         ProductSearchResult(
@@ -56,107 +65,83 @@ async def search_products(
         )
         for r in raw_results
     ]
-
-    return SearchResponseEnvelope(
-        results=results,
-        latency_ms=round(latency_ms, 2),
-    )
+    return SearchResponseEnvelope(results=results, latency_ms=_ms(start))
 
 
 # ── /ask Endpoint ─────────────────────────────────────────
 @router.post("/ask", response_model=AskResponseEnvelope)
 async def ask_products(
     request: SearchQueryRequest,
-    http_request: Request,
     search_service: ProductSearchService = Depends(get_search_service),
     cache_service: CacheService = Depends(get_cache_service),
     llm_service: LLMService = Depends(get_llm_service),
 ) -> AskResponseEnvelope:
     total_start = time.perf_counter()
 
-    # Step 1: Cache check
+    # Step 1: Cache check. The full response (answer + products) is cached, so a
+    # hit is indistinguishable from a miss apart from `source` and `timing`.
     cache_start = time.perf_counter()
-    cache_key = cache_service._generate_key("rag:cache", request.q)
+    cache_key = cache_service.make_key("ask", request.q, limit=request.limit)
     cached = await cache_service.get(cache_key)
-    cache_ms = (time.perf_counter() - cache_start) * 1000
+    cache_ms = _ms(cache_start)
 
     if cached:
-        logger.info(f"[CACHE HIT] query='{request.q}'")
-        total_ms = (time.perf_counter() - total_start) * 1000
-        return AskResponseEnvelope(
-            answer=cached,
-            source="cache",
-            retrieved_products=[],
-            timing=TimingBreakdown(
-                cache_lookup_ms=round(cache_ms, 2),
-                search_ms=0.0,
-                llm_ms=0.0,
-                total_ms=round(total_ms, 2),
-            ),
-        )
+        try:
+            envelope = AskResponseEnvelope.model_validate_json(cached)
+            logger.info(f"[CACHE HIT] query='{request.q}'")
+            return envelope.model_copy(update={
+                "source": "cache",
+                "timing": TimingBreakdown(
+                    cache_lookup_ms=cache_ms, search_ms=0.0, llm_ms=0.0,
+                    total_ms=_ms(total_start),
+                ),
+            })
+        except ValidationError:
+            logger.warning(f"[CACHE CORRUPT] key={cache_key} — ignoring entry.")
 
     # Step 2: Hybrid search
     logger.info(f"[CACHE MISS] query='{request.q}' — running hybrid search.")
     search_start = time.perf_counter()
-    raw_results = await search_service.search(query=request.q, limit=5)
-    search_ms = (time.perf_counter() - search_start) * 1000
+    raw_results = await search_service.search(query=request.q, limit=request.limit)
+    search_ms = _ms(search_start)
 
     if not raw_results:
-        total_ms = (time.perf_counter() - total_start) * 1000
         return AskResponseEnvelope(
-            answer="I cannot find a matching product matching those exact parameters in our catalog.",
+            answer=REFUSAL_MESSAGE,
             source="no_results",
             retrieved_products=[],
             timing=TimingBreakdown(
-                cache_lookup_ms=round(cache_ms, 2),
-                search_ms=round(search_ms, 2),
-                llm_ms=0.0,
-                total_ms=round(total_ms, 2),
+                cache_lookup_ms=cache_ms, search_ms=search_ms, llm_ms=0.0,
+                total_ms=_ms(total_start),
             ),
         )
 
-    # Step 3: Build context blob
-    context_lines = []
-    for r in raw_results:
-        context_lines.append(
-            f"- Title: {r.get('title', '')} | "
-            f"Category: {r.get('category', '')} | "
-            f"Price: ${r.get('price', 0.0)} | "
-            f"Description: {r.get('description', '')}"
-        )
-    context = "\n".join(context_lines)
-
-    # Step 4: LLM generation
+    # Step 3: LLM generation over the retrieved context
     llm_start = time.perf_counter()
-    answer = await llm_service.generate_answer(query=request.q, context=context)
-    llm_ms = (time.perf_counter() - llm_start) * 1000
+    llm_result = await llm_service.generate_answer(query=request.q, context=build_context(raw_results))
+    llm_ms = _ms(llm_start)
 
-    # Step 5: Cache write
-    if not answer.startswith("I was unable"):
-        await cache_service.set(cache_key, answer)
-        logger.info(f"[CACHE SET] key={cache_key}")
-
-    total_ms = (time.perf_counter() - total_start) * 1000
-
-    retrieved_products = [
-        RetrievedProduct(
-            id=r["id"],
-            title=r.get("title", ""),
-            category=r.get("category", ""),
-            price=r.get("price", 0.0),
-            rrf_score=round(r["score"], 6),
-        )
-        for r in raw_results
-    ]
-
-    return AskResponseEnvelope(
-        answer=answer,
-        source="llm",
-        retrieved_products=retrieved_products,
+    envelope = AskResponseEnvelope(
+        answer=llm_result.answer,
+        source="llm" if llm_result.ok else "llm_error",
+        retrieved_products=[
+            RetrievedProduct(
+                id=r["id"],
+                title=r.get("title", ""),
+                category=r.get("category", ""),
+                price=r.get("price", 0.0),
+                rrf_score=round(r["score"], 6),
+            )
+            for r in raw_results
+        ],
         timing=TimingBreakdown(
-            cache_lookup_ms=round(cache_ms, 2),
-            search_ms=round(search_ms, 2),
-            llm_ms=round(llm_ms, 2),
-            total_ms=round(total_ms, 2),
+            cache_lookup_ms=cache_ms, search_ms=search_ms, llm_ms=llm_ms,
+            total_ms=_ms(total_start),
         ),
     )
+
+    # Step 4: Cache write — successful generations only, never fallback messages.
+    if llm_result.ok and await cache_service.set(cache_key, envelope.model_dump_json()):
+        logger.info(f"[CACHE SET] key={cache_key}")
+
+    return envelope

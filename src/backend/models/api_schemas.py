@@ -1,9 +1,10 @@
+from typing import Literal
 from pydantic import BaseModel, Field
 
 
 class SearchQueryRequest(BaseModel):
     q: str = Field(..., min_length=1, max_length=200)
-    limit: int = Field(default=5, le=20)
+    limit: int = Field(default=5, ge=1, le=20)
 
 
 class ProductSearchResult(BaseModel):
@@ -37,8 +38,11 @@ class TimingBreakdown(BaseModel):
     total_ms: float
 
 
+AnswerSource = Literal["llm", "cache", "no_results", "llm_error"]
+
+
 class AskResponseEnvelope(BaseModel):
     answer: str
-    source: str
+    source: AnswerSource
     retrieved_products: list[RetrievedProduct]
     timing: TimingBreakdown

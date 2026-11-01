@@ -35,7 +35,7 @@ flowchart TB
         subgraph FASTAPI["⚡ FastAPI Backend — Async Core"]
             direction TB
             MW["🔀 Request Middleware\nLatency Timer · X-Process-Time"]
-            CACHE[("⚡ Redis Cache\nMD5 Key Hashing\nTTL: 5 min")]
+            CACHE[("⚡ Redis Cache\nFull Response · Fail-Open\nTTL: 5 min")]
             subgraph CORE["Core Orchestration Logic"]
                 direction LR
                 HS["🔎 Hybrid Search\nDense + Sparse\nParallel Execution"]
@@ -55,7 +55,7 @@ flowchart TB
             ED["📈 Engineering\nDiagnostics Sidebar\nLatency · RRF Scores"]
         end
 
-        EXT["☁️ Groq LLM API\nllama-3.1-8b-instant\nExponential Backoff"]
+        EXT["☁️ Groq LLM API\nopenai/gpt-oss-20b\nExponential Backoff"]
 
         U --> MW
         CACHE -->|"Cache Hit ⚡"| UI
@@ -68,7 +68,7 @@ flowchart TB
     subgraph EVAL["📊 MONITORING & EVALUATION"]
         direction LR
         LOG["📝 Loguru\nStructured Logging\nPer-Request Metrics"]
-        EVL["🧪 Eval Suite\nHit Rate@5 · Precision@5\nFaithfulness · CI Gate"]
+        EVL["🧪 Eval Suite\nHit · P · Recall · MRR · nDCG\nKeyword Coverage · Gate"]
     end
 
     D -->|"Hybrid Query\nvia gRPC"| CORE
@@ -100,13 +100,18 @@ $$
 RRF\_Score(d) = \sum_m \frac{1}{k + r_m(d)}
 $$
 
-Where `k=60` is a smoothing constant and `r_m(d)` is the rank of document `d` in retrieval model `m`. This prevents any single retrieval method from dominating and produces more robust rankings than score-based fusion (which fails when dense and sparse scores are on different scales).
+Where `k=60` is a smoothing constant and `r_m(d)` is the 1-based rank of document `d` in retrieval model `m`. Fusion runs server-side in Qdrant (`RrfQuery(rrf=Rrf(k=60))` over two `Prefetch` legs of 20 candidates each). A client-side implementation with the same `k` is available via `USE_NATIVE_FUSION=false`, and a test asserts both paths rank identically.
 
-### 4. Two-Tier Caching Strategy
-- **Redis cache** with 5-minute TTL intercepts repeated queries before they hit Qdrant or the LLM
-- Cache keys use MD5 hashes of normalized (lowercased, stripped) query strings — "Waterproof Bag" and "waterproof bag" hit the same cache entry
-- Demonstrated cache hit latency: **4-5ms** vs 500-800ms for full pipeline
-- Protects Groq free tier rate limits and eliminates redundant vector lookups
+Fusing ranks instead of scores avoids calibrating cosine similarity against BM25 scores, which live on different scales. `k` sets the trade-off between *agreement* and *top rank*: with a small `k` (Qdrant's default is 2) a document ranked 1st by one retriever ties with one ranked 4th by both; with `k=60` the document both retrievers agree on wins.
+
+> **BM25 needs Qdrant's IDF modifier.** FastEmbed's `Qdrant/bm25` model stores only the saturated term-frequency part of BM25. The IDF part is computed by Qdrant from collection statistics, and only when the sparse index is created with `modifier=Modifier.IDF`. Queries are encoded with `query_embed` (weight 1.0 per token). Ingestion refuses to reuse a collection whose sparse index lacks the modifier.
+
+### 4. Response Caching (Redis)
+- Redis with a 5-minute TTL caches the **full `/ask` response** (answer + retrieved products), so a cache hit returns exactly what the original request did
+- Keys: `rag:<cache version>:ask:limit=<n>:<md5(normalized query)>`. Normalization (lowercase, trimmed, whitespace collapsed) makes "Waterproof  Bag" and "waterproof bag" share an entry; the version prefix is bumped on re-index so stale answers are never served
+- Only successful LLM answers are cached, never fallback messages
+- **Fail-open with a circuit breaker:** each Redis call has a 250 ms budget; after a failure the cache is bypassed for 30 s, so an outage costs one timeout rather than one per request
+- Measured locally: cache hit ≈ 1.5–11 ms end-to-end vs ≈ 300–950 ms for a full search + LLM request
 
 ### 5. CPU-Only Embedding (FastEmbed)
 FastEmbed runs ONNX-optimized models locally with zero GPU requirement:
@@ -126,8 +131,8 @@ Both models are loaded once at startup as app-level singletons — not per-reque
 | Sparse Embeddings | BM25 via FastEmbed |
 | Fusion Algorithm | Reciprocal Rank Fusion (RRF, k=60) |
 | Backend API | FastAPI (async) + Uvicorn |
-| LLM | Groq llama-3.1-8b-instant |
-| Cache | Redis 7 (Docker) |
+| LLM | Groq `openai/gpt-oss-20b` (configurable via `LLM_MODEL`) |
+| Cache | Redis 7.4 (Docker) |
 | Frontend | Streamlit |
 | Validation | Pydantic V2 |
 | Containerization | Docker Compose |
@@ -158,13 +163,21 @@ cp .env.example .env
 docker-compose up --build -d
 ```
 
-This spins up 4 containers: Qdrant, Redis, FastAPI backend, Streamlit frontend.
+This spins up 4 containers: Qdrant (v1.18.2), Redis (7.4.9), FastAPI backend, Streamlit frontend. Qdrant and Redis data live in named Docker volumes (`qdrant_data`, `redis_data`).
 
 ### 4. Ingest product data
 ```bash
 pip install -r requirements.txt
-python -m src.ingestion.ingest
+python -m src.ingestion.ingest            # add --recreate to rebuild the collection from scratch
 ```
+Ingestion validates every record, logs a summary of rejected records, and refuses to reuse an existing collection whose sparse index lacks the IDF modifier (`--recreate` rebuilds it).
+
+### Run the tests
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+The suite uses Qdrant's local mode and the real embedding models, so it does not need Docker.
 
 ### 5. Access the application
 - **Frontend UI**: http://localhost:8501
@@ -187,10 +200,10 @@ Response: {"results": [...], "latency_ms": 45.2}
 Full RAG pipeline. Returns LLM-generated answer with diagnostic metadata.
 
 ```json
-Request:  {"q": "waterproof hiking bag", "limit": 5}
+Request:  {"q": "waterproof hiking bag", "limit": 5}     // limit: 1–20
 Response: {
   "answer": "The Rugged Camping Backpack...",
-  "source": "llm",
+  "source": "llm",          // llm | cache | no_results | llm_error
   "retrieved_products": [...],
   "timing": {
     "cache_lookup_ms": 1.2,
@@ -208,26 +221,31 @@ Response: {
 Run the offline evaluation suite:
 
 ```bash
-python src/evaluation/eval.py
+python -m src.evaluation.eval                 # retrieval + answers
+python -m src.evaluation.eval --skip-answers   # retrieval only (no LLM calls)
 ```
 
-### Latest Results (39 products, 15 test queries)
+Retrieval metrics are computed from `/search` (no cache, no LLM), so they're deterministic and independent of cache state. Answer metrics come from `/ask`. Each run writes a JSON report to `reports/`.
 
-| Metric | Score |
-|---|---|
-| Hit Rate @ 5 | 1.0000 |
-| Precision @ 5 | 0.2800 |
-| Faithfulness | 0.8000 |
-| CI/CD Gate | ✓ PASSED |
+### Latest Results (39 products, 15 test queries, k=5)
 
-**Hit Rate@5 = 1.00** means every query retrieved at least one correct product in the top 5.
+| Metric | Score | Notes |
+|---|---|---|
+| Hit Rate @ 5 | 1.0000 | |
+| Precision @ 5 | 0.2533 | Ceiling on this ground truth is 0.2933 (only 22 relevant labels across 75 slots) |
+| Recall @ 5 | 0.9222 | |
+| MRR @ 5 | 1.0000 | A relevant product is ranked first for every query |
+| nDCG @ 5 | 0.9429 | Binary relevance |
+| Keyword coverage | 0.8667 | Share of expected keywords in the answer (`openai/gpt-oss-20b`); varies slightly between runs |
 
-**Precision@5 = 0.28** reflects that most queries have 1-2 relevant products in a 39-item catalog — mathematically expected given catalog size.
+Retrieval metrics were identical across repeated runs, including runs served entirely from cache.
 
-**Faithfulness = 0.80** means the LLM grounded 80% of responses in retrieved product data without hallucination.
+**How to read these numbers honestly:**
+- **The benchmark is saturated.** Dense-only retrieval also reaches Hit@5 = 1.0 on this set (offline check), so these 15 queries can't show whether hybrid retrieval beats a single retriever. A larger benchmark with human relevance labels and dense/sparse/hybrid baselines is the next step.
+- **Keyword coverage is not faithfulness.** It checks whether expected words appear in the answer, not whether the answer is supported by the retrieved products.
 
-### CI/CD Gate
-The evaluation script exits with code `1` if Hit Rate@5 falls below `0.70`, blocking deployment of retrieval regressions.
+### Evaluation Gate
+The script exits with code `1` if Hit Rate@5 falls below `0.70` or any retrieval request fails. It's meant to be run in CI; no CI workflow is set up yet.
 
 ---
 
@@ -244,12 +262,6 @@ ecommerce-rag-engine/
 │   └── raw/
 
 │       └── sample_products.json
-
-├── database/
-
-│   ├── qdrant_storage/       # Qdrant vector DB persistence
-
-│   └── cache_storage/        # Redis persistence
 
 ├── src/
 
@@ -295,7 +307,11 @@ ecommerce-rag-engine/
 
 │       ├── ground_truth.json
 
-│       └── eval.py           # Precision + Hit Rate + Faithfulness
+│       ├── metrics.py        # Hit@K, P@K, Recall@K, MRR, nDCG, keyword coverage
+
+│       └── eval.py           # Evaluation runner + gate
+
+├── tests/                    # pytest: ingestion, search, API, cache, metrics, LLM
 
 ├── Dockerfile.backend
 
@@ -303,7 +319,9 @@ ecommerce-rag-engine/
 
 ├── docker-compose.yml
 
-└── requirements.txt
+├── requirements.txt
+
+└── requirements-dev.txt
 ```
 
 ---
@@ -311,7 +329,9 @@ ecommerce-rag-engine/
 ## Known Limitations & Future Work
 
 - **Catalog size**: 39 products is a demonstration dataset. Production deployment would require a larger catalog and re-evaluation of Precision@K thresholds.
-- **Evaluation depth**: Current faithfulness metric is keyword-based. RAGAS framework with LLM-as-judge would provide deeper semantic faithfulness scoring at scale.
+- **Evaluation depth**: The answer metric is keyword coverage, not faithfulness. An LLM-judge check of answers against the retrieved context is planned.
+- **Benchmark saturation**: With 39 products and 15 queries, single-retriever baselines already score Hit@5 = 1.0, so the benchmark can't demonstrate the benefit of hybrid retrieval.
+- **No filters**: Price isn't part of the indexed text and there are no payload filters yet, so queries like "under $25" aren't enforced by retrieval.
 - **Embedding model**: `bge-small-en-v1.5` is optimized for speed. `bge-large-en-v1.5` or `text-embedding-3-large` would improve semantic retrieval quality at higher compute cost.
 - **Sparse model**: BM25 is statistical. Upgrading to SPLADE neural sparse model would improve keyword expansion for ambiguous queries.
 

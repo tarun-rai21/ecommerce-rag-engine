@@ -14,8 +14,8 @@ __pycache__/
 .cache/
 *.cache
 
-# Qdrant storage
-database/qdrant_storage/
+# Local Qdrant + Redis data (docker volumes)
+database/
 
 # IDE
 .idea/
@@ -38,3 +38,5 @@ build/
 .pytest_cache/
 htmlcov/
 .coverage
+# Eval reports
+reports/
