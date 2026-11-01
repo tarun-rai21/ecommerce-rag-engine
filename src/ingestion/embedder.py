@@ -23,6 +23,11 @@ class ProductEmbedder:
         self.dense_model = TextEmbedding(model_name=DENSE_MODEL_NAME)
         self.sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL_NAME)
 
+    @property
+    def model_tag(self) -> str:
+        """Identifies the encoders; part of the embedding-cache key."""
+        return f"{DENSE_MODEL_NAME}+{SPARSE_MODEL_NAME}"
+
     def embed_documents(
         self, texts: list[str]
     ) -> tuple[list[list[float]], list[dict[str, list]]]:

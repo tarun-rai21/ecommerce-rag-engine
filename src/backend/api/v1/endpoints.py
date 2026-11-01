@@ -35,14 +35,27 @@ def get_llm_service(request: Request) -> LLMService:
     return request.app.state.llm_service
 
 
+# Descriptions can run to 2,000 chars; five full ones would cost ~2.5k prompt tokens
+# per request against an 8k tokens/min free-tier limit.
+CONTEXT_DESCRIPTION_CHARS = 400
+
+
 def build_context(results: list[dict]) -> str:
-    return "\n".join(
-        f"- Title: {r.get('title', '')} | "
-        f"Category: {r.get('category', '')} | "
-        f"Price: ${float(r.get('price', 0.0)):.2f} | "
-        f"Description: {r.get('description', '')}"
-        for r in results
-    )
+    lines = []
+    for r in results:
+        fields = [
+            f"Title: {r.get('title', '')}",
+            f"Category: {r.get('product_class') or r.get('category', '')}",
+            f"Price: ${float(r.get('price', 0.0)):.2f}",
+        ]
+        if r.get("rating") is not None:
+            fields.append(f"Rating: {r['rating']:.1f}/5 ({r.get('review_count') or 0} reviews)")
+        if r.get("features"):
+            fields.append("Attributes: " + ", ".join(f"{k}: {v}" for k, v in r["features"].items()))
+        description = (r.get("description") or "")[:CONTEXT_DESCRIPTION_CHARS]
+        fields.append(f"Description: {description}")
+        lines.append("- " + " | ".join(fields))
+    return "\n".join(lines)
 
 
 # ── /search Endpoint ──────────────────────────────────────

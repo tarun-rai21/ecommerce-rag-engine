@@ -17,6 +17,10 @@ st.set_page_config(
 # ── Header ────────────────────────────────────────────────
 st.title("🛍️ E-Commerce Semantic Search")
 st.caption("Powered by Hybrid Dense + Sparse Retrieval · Reciprocal Rank Fusion · LLM Generation")
+st.caption(
+    "Catalog: Wayfair WANDS (~43k products). Prices are synthetic — WANDS publishes none — "
+    "and exist only to demonstrate price filtering."
+)
 st.divider()
 
 # ── Session State Init ────────────────────────────────────
@@ -32,7 +36,7 @@ if "last_products" not in st.session_state:
 # ── Search Input ──────────────────────────────────────────
 query = st.text_input(
     label="Ask about a product",
-    placeholder="e.g. waterproof hiking bag, wireless charger under $25...",
+    placeholder="e.g. mid-century modern coffee table, outdoor patio umbrella, grey area rug...",
     max_chars=200,
 )
 

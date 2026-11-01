@@ -1,13 +1,18 @@
 import argparse
 import json
-from dataclasses import dataclass, field
+import time
+from dataclasses import asdict, dataclass, field
+from itertools import islice
 from pathlib import Path
+from typing import Iterable
+
 from loguru import logger
 from pydantic import ValidationError
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
     Modifier,
+    PayloadSchemaType,
     VectorParams,
     SparseVectorParams,
     SparseIndexParams,
@@ -16,16 +21,27 @@ from qdrant_client.models import (
 )
 
 from config.settings import settings
-from src.ingestion.schemas import ProductRecord
 from src.ingestion.embedder import ProductEmbedder
+from src.ingestion.embedding_cache import EmbeddingCache
+from src.ingestion.loaders import LOADERS
+from src.ingestion.schemas import ProductRecord
 
 # ── Constants ────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_PATH = REPO_ROOT / "data" / "raw" / "sample_products.json"
+REPORTS_DIR = REPO_ROOT / "reports"
 BATCH_SIZE = 64
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 DENSE_DIM = 384
+
+# Payload fields that filters run on. Indexed so filtered search stays fast.
+PAYLOAD_INDEXES: dict[str, PayloadSchemaType] = {
+    "category": PayloadSchemaType.KEYWORD,
+    "product_class": PayloadSchemaType.KEYWORD,
+    "price": PayloadSchemaType.FLOAT,
+    "rating": PayloadSchemaType.FLOAT,
+    "review_count": PayloadSchemaType.INTEGER,
+}
 
 
 class CollectionConfigError(RuntimeError):
@@ -34,8 +50,13 @@ class CollectionConfigError(RuntimeError):
 
 @dataclass
 class IngestionReport:
+    dataset: str = ""
+    collection: str = ""
     loaded: int = 0
     uploaded: int = 0
+    embedded: int = 0      # newly computed embeddings
+    cache_hits: int = 0    # embeddings reused from the on-disk cache
+    seconds: float = 0.0
     failures: list[tuple[int, str]] = field(default_factory=list)  # (record index, reason)
 
 
@@ -58,7 +79,7 @@ def _sparse_has_idf(client: QdrantClient, name: str) -> bool:
 def ensure_collection(
     client: QdrantClient, name: str | None = None, recreate: bool = False
 ) -> None:
-    """Create the collection if needed.
+    """Create the collection (with payload indexes) if needed.
 
     The BM25 sparse model only stores term-frequency weights; IDF is computed by
     Qdrant, and only when the sparse index has ``modifier=IDF``. That setting can't
@@ -92,12 +113,17 @@ def ensure_collection(
             )
         },
     )
-    logger.info(f"Collection '{name}' created (dense cosine {DENSE_DIM}d + sparse BM25 with IDF).")
+    for field_name, schema in PAYLOAD_INDEXES.items():
+        client.create_payload_index(name, field_name=field_name, field_schema=schema)
+    logger.info(
+        f"Collection '{name}' created (dense cosine {DENSE_DIM}d + sparse BM25 with IDF; "
+        f"payload indexes: {', '.join(PAYLOAD_INDEXES)})."
+    )
 
 
 # ── Batch Processing ──────────────────────────────────────
 def load_and_validate(
-    raw_records: list[dict], offset: int = 0
+    raw_records: list, offset: int = 0
 ) -> tuple[list[ProductRecord], list[tuple[int, str]]]:
     valid_records: list[ProductRecord] = []
     failures: list[tuple[int, str]] = []
@@ -133,73 +159,128 @@ def build_points(
             },
             payload={
                 "product_id": record.id,
-                "title": record.title,
-                "description": record.description,
-                "price": record.price,
-                "category": record.category,
-                "metadata": record.metadata,
+                **record.model_dump(exclude={"id"}, exclude_none=True),
             },
         )
         for record, dense, sparse in zip(records, dense_vectors, sparse_vectors, strict=True)
     ]
 
 
+def embed_with_cache(
+    embedder: ProductEmbedder, texts: list[str], cache: EmbeddingCache | None
+) -> tuple[list[list[float]], list[dict], int]:
+    """Embed texts, reusing cached vectors. Returns (dense, sparse, newly_embedded)."""
+    if cache is None:
+        dense, sparse = embedder.embed_documents(texts)
+        return dense, sparse, len(texts)
+
+    from src.ingestion.embedding_cache import text_key
+    cached = cache.get_many(texts)
+    missing = [t for t in dict.fromkeys(texts) if text_key(t) not in cached]
+    if missing:
+        new_dense, new_sparse = embedder.embed_documents(missing)
+        cache.put_many(missing, new_dense, new_sparse)
+        for t, d, s in zip(missing, new_dense, new_sparse):
+            cached[text_key(t)] = (d, s)
+    vectors = [cached[text_key(t)] for t in texts]
+    return [v[0] for v in vectors], [v[1] for v in vectors], len(missing)
+
+
 def ingest_records(
     client: QdrantClient,
     embedder: ProductEmbedder,
-    raw_records: list[dict],
+    raw_records: Iterable,
     collection_name: str | None = None,
+    cache: EmbeddingCache | None = None,
+    total: int | None = None,
+    batch_size: int = BATCH_SIZE,
 ) -> IngestionReport:
     collection_name = collection_name or settings.COLLECTION_NAME
-    report = IngestionReport(loaded=len(raw_records))
+    report = IngestionReport(collection=collection_name)
+    started = time.perf_counter()
+    iterator = iter(raw_records)
+    batch_start = 0
 
-    for batch_start in range(0, len(raw_records), BATCH_SIZE):
-        batch_raw = raw_records[batch_start: batch_start + BATCH_SIZE]
-        logger.info(f"Processing records {batch_start} → {batch_start + len(batch_raw)}")
-
+    while batch_raw := list(islice(iterator, batch_size)):
+        report.loaded += len(batch_raw)
         valid_records, failures = load_and_validate(batch_raw, offset=batch_start)
         report.failures.extend(failures)
+        batch_start += len(batch_raw)
         if not valid_records:
             logger.warning("No valid records in this batch, skipping.")
             continue
 
         texts = [r.get_text_payload() for r in valid_records]
-        dense_vectors, sparse_vectors = embedder.embed_documents(texts)
-        points = build_points(valid_records, dense_vectors, sparse_vectors)
+        dense_vectors, sparse_vectors, n_new = embed_with_cache(embedder, texts, cache)
+        report.embedded += n_new
+        report.cache_hits += len(texts) - n_new
 
-        client.upsert(collection_name=collection_name, points=points, wait=True)
-        report.uploaded += len(points)
+        client.upsert(
+            collection_name=collection_name,
+            points=build_points(valid_records, dense_vectors, sparse_vectors),
+            wait=True,
+        )
+        report.uploaded += len(valid_records)
 
+        elapsed = time.perf_counter() - started
+        rate = report.loaded / elapsed if elapsed else 0.0
+        eta = f", ETA {(total - report.loaded) / rate / 60:.1f} min" if total and rate else ""
+        logger.info(
+            f"{report.loaded}{f'/{total}' if total else ''} records "
+            f"({report.cache_hits} cached, {report.embedded} embedded) · {rate:.1f} rec/s{eta}"
+        )
+
+    report.seconds = round(time.perf_counter() - started, 1)
     return report
+
+
+def write_report(report: IngestionReport) -> Path:
+    REPORTS_DIR.mkdir(exist_ok=True)
+    path = REPORTS_DIR / f"ingestion_{report.dataset}_{time.strftime('%Y%m%d-%H%M%S')}.json"
+    data = asdict(report)
+    data["failures"] = [{"index": i, "reason": r} for i, r in report.failures]
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return path
 
 
 # ── Entry Point ───────────────────────────────────────────
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Validate, embed and index products into Qdrant.")
-    parser.add_argument("--data-path", type=Path, default=DATA_PATH)
+    parser.add_argument("--dataset", choices=sorted(LOADERS), default="wands")
+    parser.add_argument("--collection", default=settings.COLLECTION_NAME)
+    parser.add_argument("--limit", type=int, default=None, help="Only ingest the first N products.")
     parser.add_argument(
         "--recreate", action="store_true",
         help="Drop and rebuild the collection (required once to add the BM25 IDF modifier).",
     )
+    parser.add_argument("--no-cache", action="store_true", help="Don't read or write the embedding cache.")
     args = parser.parse_args(argv)
 
-    logger.info("Starting ingestion pipeline.")
-    with open(args.data_path, "r", encoding="utf-8") as f:
-        raw_records: list[dict] = json.load(f)
-    logger.info(f"Loaded {len(raw_records)} raw records from {args.data_path}.")
+    logger.info(f"Starting ingestion: dataset={args.dataset} collection={args.collection} limit={args.limit}")
+    records = list(LOADERS[args.dataset](limit=args.limit))
+    logger.info(f"Loaded {len(records)} raw records.")
 
     client = get_client()
-    ensure_collection(client, recreate=args.recreate)
+    ensure_collection(client, name=args.collection, recreate=args.recreate)
     embedder = ProductEmbedder()
+    cache = None if args.no_cache else EmbeddingCache(model_tag=embedder.model_tag)
 
-    report = ingest_records(client, embedder, raw_records)
+    try:
+        report = ingest_records(
+            client, embedder, records, collection_name=args.collection, cache=cache, total=len(records),
+        )
+    finally:
+        if cache:
+            cache.close()
+    report.dataset = args.dataset
 
     logger.info(
-        f"Ingestion complete: {report.uploaded}/{report.loaded} uploaded, "
-        f"{len(report.failures)} rejected."
+        f"Ingestion complete in {report.seconds:.0f}s: {report.uploaded}/{report.loaded} uploaded, "
+        f"{len(report.failures)} rejected, {report.cache_hits} embeddings reused from cache."
     )
     for idx, reason in report.failures[:20]:
         logger.info(f"  rejected #{idx}: {reason}")
+    logger.info(f"Report written to {write_report(report)}")
 
 
 if __name__ == "__main__":

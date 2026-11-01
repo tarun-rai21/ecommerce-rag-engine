@@ -34,7 +34,7 @@ services:
       - QDRANT_GRPC_PORT=6334
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - COLLECTION_NAME=ecommerce_products
+      - COLLECTION_NAME=wands_products
       - GROQ_API_KEY=${GROQ_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-20b}
     depends_on:

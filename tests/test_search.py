@@ -57,6 +57,25 @@ def test_search_returns_catalog_ids_and_respects_limit(services):
     assert {"title", "price", "category", "score"} <= results[0].keys()
 
 
+@pytest.mark.parametrize("mode", ["dense", "sparse", "hybrid"])
+def test_search_modes(services, mode):
+    native, _ = services
+    results = asyncio.run(native.search("camping headlamp", limit=3, mode=mode))
+    assert results and results[0]["id"] == "136"
+
+
+def test_hybrid_can_return_more_than_prefetch_limit(indexed_path, embedder, services):
+    native, _ = services
+    small_prefetch = ProductSearchService(client=native.client, embedder=embedder,
+                                          collection_name=COLLECTION, prefetch_limit=5)
+    assert len(asyncio.run(small_prefetch.search("outdoor gear", limit=12))) == 12
+
+
+def test_unknown_mode_rejected(services):
+    with pytest.raises(ValueError):
+        asyncio.run(services[0].search("x", mode="bogus"))
+
+
 def test_query_uses_query_encoder(embedder):
     # BM25 query vectors weight every token 1.0 (IDF is applied by Qdrant).
     _, sparse = embedder.embed_query("waterproof hiking backpack")

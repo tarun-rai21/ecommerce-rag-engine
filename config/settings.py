@@ -7,11 +7,13 @@ class Settings(BaseSettings):
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = Field(default=6333)
     QDRANT_GRPC_PORT: int = Field(default=6334)
-    COLLECTION_NAME: str = "ecommerce_products"
+    COLLECTION_NAME: str = "wands_products"
 
     # ── Retrieval ─────────────────────────────────────────
-    RRF_K: int = Field(default=60, ge=1)
-    PREFETCH_LIMIT: int = Field(default=20, ge=1)
+    # Tuned on the WANDS dev split (2026-11-01): k=30, prefetch=100 had the best nDCG@10.
+    # Most of the gain came from prefetch 20 → 50+; k in {10..100} differed by < 0.005.
+    RRF_K: int = Field(default=30, ge=1)
+    PREFETCH_LIMIT: int = Field(default=100, ge=1)
     # True: fuse server-side with Qdrant's RRF. False: two queries + Python RRF.
     # Both paths use RRF_K, so they must produce the same ranking.
     USE_NATIVE_FUSION: bool = True

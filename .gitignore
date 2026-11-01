@@ -40,3 +40,6 @@ htmlcov/
 .coverage
 # Eval reports
 reports/
+
+# Downloaded datasets
+data/wands/

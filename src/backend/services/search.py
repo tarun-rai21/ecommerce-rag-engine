@@ -1,4 +1,5 @@
 import asyncio
+from typing import Literal
 from loguru import logger
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
@@ -13,6 +14,7 @@ from src.ingestion.embedder import ProductEmbedder
 
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
+SearchMode = Literal["hybrid", "dense", "sparse"]
 
 
 def rrf_fuse(ranked_lists: list[list], k: int, limit: int) -> list[tuple[object, float, dict]]:
@@ -59,6 +61,10 @@ class ProductSearchService:
             settings.USE_NATIVE_FUSION if use_native_fusion is None else use_native_fusion
         )
 
+    def _prefetch(self, limit: int) -> int:
+        # Each fusion leg needs at least `limit` candidates to fill the result list.
+        return max(self.prefetch_limit, limit)
+
     async def close(self) -> None:
         await self.client.close()
 
@@ -74,8 +80,8 @@ class ProductSearchService:
         results = await self.client.query_points(
             collection_name=self.collection_name,
             prefetch=[
-                Prefetch(query=dense_vector, using=DENSE_VECTOR_NAME, limit=self.prefetch_limit),
-                Prefetch(query=sparse_vector, using=SPARSE_VECTOR_NAME, limit=self.prefetch_limit),
+                Prefetch(query=dense_vector, using=DENSE_VECTOR_NAME, limit=self._prefetch(limit)),
+                Prefetch(query=sparse_vector, using=SPARSE_VECTOR_NAME, limit=self._prefetch(limit)),
             ],
             query=RrfQuery(rrf=Rrf(k=self.rrf_k)),
             limit=limit,
@@ -92,32 +98,48 @@ class ProductSearchService:
                 collection_name=self.collection_name,
                 query=dense_vector,
                 using=DENSE_VECTOR_NAME,
-                limit=self.prefetch_limit,
+                limit=self._prefetch(limit),
                 with_payload=True,
             ),
             self.client.query_points(
                 collection_name=self.collection_name,
                 query=sparse_vector,
                 using=SPARSE_VECTOR_NAME,
-                limit=self.prefetch_limit,
+                limit=self._prefetch(limit),
                 with_payload=True,
             ),
         )
         fused = rrf_fuse([dense_hits.points, sparse_hits.points], k=self.rrf_k, limit=limit)
         return [_to_result(pid, score, payload) for pid, score, payload in fused]
 
+    # ── Single-retriever search (baselines) ───────────────
+    async def _single_search(self, vector, using: str, limit: int) -> list[dict]:
+        results = await self.client.query_points(
+            collection_name=self.collection_name,
+            query=vector,
+            using=using,
+            limit=limit,
+            with_payload=True,
+        )
+        return [_to_result(hit.id, hit.score, hit.payload or {}) for hit in results.points]
+
     # ── Public Entry Point ────────────────────────────────
-    async def search(self, query: str, limit: int = 5) -> list[dict]:
+    async def search(self, query: str, limit: int = 5, mode: SearchMode = "hybrid") -> list[dict]:
+        """mode: 'hybrid' (dense + BM25 fused with RRF), or 'dense' / 'sparse' alone
+        (used as evaluation baselines)."""
         dense_vector, sparse = await self._vectorize_query(query)
         sparse_vector = SparseVector(indices=sparse["indices"], values=sparse["values"])
 
-        if self.use_native_fusion:
+        if mode == "dense":
+            results = await self._single_search(dense_vector, DENSE_VECTOR_NAME, limit)
+        elif mode == "sparse":
+            results = await self._single_search(sparse_vector, SPARSE_VECTOR_NAME, limit)
+        elif mode == "hybrid" and self.use_native_fusion:
             results = await self._native_fusion_search(dense_vector, sparse_vector, limit)
-        else:
+        elif mode == "hybrid":
             results = await self._python_fusion_search(dense_vector, sparse_vector, limit)
+        else:
+            raise ValueError(f"Unknown search mode: {mode!r}")
 
-        logger.info(
-            f"Hybrid search ({'native' if self.use_native_fusion else 'python'} RRF, "
-            f"k={self.rrf_k}) returned {len(results)} results for query: '{query}'"
-        )
+        logger.debug(f"{mode} search returned {len(results)} results for query: '{query}'")
         return results

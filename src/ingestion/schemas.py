@@ -5,13 +5,26 @@ from typing import Any
 # Fixed namespace so the same product_id always maps to the same Qdrant point id.
 _POINT_ID_NAMESPACE = uuid.UUID("6f1c2b1e-7a43-4c4e-9a52-1f0d3b6e8c21")
 
+# How much of each field goes into the embedded text. Embedding cost grows with
+# length (~9 docs/s on a 4-core laptop CPU at ~470 chars), so the description is
+# truncated; the full description stays in the payload for the LLM.
+EMBED_DESCRIPTION_CHARS = 300
+EMBED_FEATURE_KEYS = ("color", "primarymaterial", "material", "style", "shape")
+
 
 class ProductRecord(BaseModel):
     id: str
     title: str
     description: str = ""
     price: float = Field(ge=0.0)
-    category: str = "Unknown"
+    price_is_synthetic: bool = False
+    category: str = "Unknown"  # top-level category, used for filtering
+    product_class: str | None = None
+    category_path: list[str] = []
+    features: dict[str, str] = {}
+    rating: float | None = Field(default=None, ge=0.0, le=5.0)
+    rating_count: int | None = Field(default=None, ge=0)
+    review_count: int | None = Field(default=None, ge=0)
     metadata: dict[str, Any] = {}
 
     @field_validator("id", mode="before")
@@ -43,4 +56,20 @@ class ProductRecord(BaseModel):
         return str(uuid.uuid5(_POINT_ID_NAMESPACE, self.id))
 
     def get_text_payload(self) -> str:
-        return f"Title: {self.title} | Category: {self.category} | Description: {self.description}"
+        """Text that gets embedded (dense) and tokenised (BM25).
+
+        Plain sentences, no field labels: labels like 'Title:' would be added to
+        every document, costing tokens and adding a constant BM25 term."""
+        parts: list[str] = [self.title]
+        if self.product_class and self.product_class.lower() != self.title.lower():
+            parts.append(self.product_class)
+        if self.category_path:
+            parts.append(" > ".join(self.category_path))
+        elif self.category and self.category != "Unknown":
+            parts.append(self.category)
+        attrs = [f"{k}: {self.features[k]}" for k in EMBED_FEATURE_KEYS if self.features.get(k)]
+        if attrs:
+            parts.append(", ".join(attrs))
+        if self.description:
+            parts.append(self.description[:EMBED_DESCRIPTION_CHARS])
+        return ". ".join(p.strip().rstrip(".") for p in parts if p and p.strip())
