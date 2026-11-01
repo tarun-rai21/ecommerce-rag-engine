@@ -9,8 +9,11 @@ Metrics (per query, then averaged over queries):
   judgment are excluded from these three (count reported)
 - judged@10 share of the top 10 that has any human judgment. Unjudged results
   count as irrelevant, so a low judged@10 means nDCG may be underestimated.
-- latency    retrieval only (Qdrant round trip); query embedding is excluded
-  because it is computed once per query and shared across modes.
+- latency    retrieval only (Qdrant round trip, plus cross-encoder scoring for
+  hybrid_rerank); query embedding is excluded because it is computed once per
+  query and shared across modes.
+
+Modes: dense, sparse, hybrid, hybrid_rerank (--rerank-model, --rerank-candidates).
 
 Usage (from repo root, Qdrant running, collection ingested):
     python -m src.evaluation.retrieval_eval --split dev          # tune here
@@ -27,6 +30,7 @@ from pathlib import Path
 from loguru import logger
 
 from config.settings import settings
+from src.backend.services.rerank import RerankerService
 from src.backend.services.search import ProductSearchService
 from src.evaluation.datasets import EvalQuery, load_wands_queries
 from src.evaluation.metrics import ndcg_at_k, precision_at_k, recall_at_k, reciprocal_rank
@@ -76,7 +80,10 @@ async def run_mode(service: ProductSearchService, queries: list[EvalQuery], mode
         start = time.perf_counter()
         top = [str(r["id"]) for r in await service.search(q.text, limit=K, mode=mode)]
         latency_ms = (time.perf_counter() - start) * 1000
-        deep = [str(r["id"]) for r in await service.search(q.text, limit=DEPTH, mode=mode)]
+        # Reranking only reorders the top candidates (< DEPTH), so it can't change
+        # which products are in the top 100: reuse the plain hybrid deep search.
+        deep_mode = "hybrid" if mode == "hybrid_rerank" else mode
+        deep = [str(r["id"]) for r in await service.search(q.text, limit=DEPTH, mode=deep_mode)]
         rows.append({"query_id": q.query_id, "query": q.text, "latency_ms": latency_ms,
                      "top10": top, **score_query(q, top, deep)})
         if i % 50 == 0:
@@ -142,11 +149,16 @@ async def main_async(args: argparse.Namespace) -> None:
         queries = queries[: args.max_queries]
     logger.info(f"Evaluating {len(queries)} {args.split} queries on '{args.collection}' — modes: {args.modes}")
 
+    reranker = None
+    if "hybrid_rerank" in args.modes:
+        reranker = RerankerService(args.rerank_model, candidates=args.rerank_candidates,
+                                   timeout_seconds=args.rerank_timeout)
     service = ProductSearchService(
         embedder=MemoEmbedder(ProductEmbedder()),
         collection_name=args.collection,
         rrf_k=args.rrf_k,
         prefetch_limit=args.prefetch,
+        reranker=reranker,
     )
     try:
         rows_by_mode = {mode: await run_mode(service, queries, mode) for mode in args.modes}
@@ -160,7 +172,9 @@ async def main_async(args: argparse.Namespace) -> None:
     REPORTS_DIR.mkdir(exist_ok=True)
     stem = f"retrieval_{args.split}_{_git_sha()}_{time.strftime('%Y%m%d-%H%M%S')}"
     config = {"collection": args.collection, "split": args.split, "rrf_k": service.rrf_k,
-              "prefetch": service.prefetch_limit, "native_fusion": service.use_native_fusion, "modes": args.modes}
+              "prefetch": service.prefetch_limit, "native_fusion": service.use_native_fusion, "modes": args.modes,
+              "rerank_model": args.rerank_model if reranker else None,
+              "rerank_candidates": args.rerank_candidates if reranker else None}
     (REPORTS_DIR / f"{stem}.json").write_text(
         json.dumps({"config": config, "summary": summary, "per_query": rows_by_mode}, indent=2), encoding="utf-8")
     (REPORTS_DIR / f"{stem}.md").write_text(markdown + "\n", encoding="utf-8")
@@ -177,6 +191,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--prefetch", type=int, default=settings.PREFETCH_LIMIT,
                         help="Candidates per leg before fusion (raised to the eval depth automatically).")
     parser.add_argument("--max-queries", type=int, default=None, help="Quick runs: only the first N queries.")
+    parser.add_argument("--rerank-model", default=settings.RERANK_MODEL)
+    parser.add_argument("--rerank-candidates", type=int, default=settings.RERANK_CANDIDATES)
+    parser.add_argument("--rerank-timeout", type=float, default=60.0,
+                        help="Generous by default so evaluation measures quality, not timeouts.")
     asyncio.run(main_async(parser.parse_args(argv)))
 
 

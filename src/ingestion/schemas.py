@@ -1,6 +1,6 @@
 import uuid
 from pydantic import BaseModel, Field, field_validator
-from typing import Any
+from typing import Any, Mapping
 
 # Fixed namespace so the same product_id always maps to the same Qdrant point id.
 _POINT_ID_NAMESPACE = uuid.UUID("6f1c2b1e-7a43-4c4e-9a52-1f0d3b6e8c21")
@@ -56,20 +56,34 @@ class ProductRecord(BaseModel):
         return str(uuid.uuid5(_POINT_ID_NAMESPACE, self.id))
 
     def get_text_payload(self) -> str:
-        """Text that gets embedded (dense) and tokenised (BM25).
+        """Text that gets embedded (dense) and tokenised (BM25)."""
+        return build_search_text(self.model_dump())
 
-        Plain sentences, no field labels: labels like 'Title:' would be added to
-        every document, costing tokens and adding a constant BM25 term."""
-        parts: list[str] = [self.title]
-        if self.product_class and self.product_class.lower() != self.title.lower():
-            parts.append(self.product_class)
-        if self.category_path:
-            parts.append(" > ".join(self.category_path))
-        elif self.category and self.category != "Unknown":
-            parts.append(self.category)
-        attrs = [f"{k}: {self.features[k]}" for k in EMBED_FEATURE_KEYS if self.features.get(k)]
-        if attrs:
-            parts.append(", ".join(attrs))
-        if self.description:
-            parts.append(self.description[:EMBED_DESCRIPTION_CHARS])
-        return ". ".join(p.strip().rstrip(".") for p in parts if p and p.strip())
+
+def build_search_text(fields: Mapping[str, Any]) -> str:
+    """Product text used for embedding, BM25 and reranking.
+
+    Works on a ProductRecord dump or a Qdrant payload, so the reranker scores
+    exactly the text that was indexed. Plain sentences, no field labels: labels
+    like 'Title:' would be added to every document, costing tokens and adding a
+    constant BM25 term."""
+    title = (fields.get("title") or "").strip()
+    product_class = fields.get("product_class")
+    category_path = fields.get("category_path") or []
+    category = fields.get("category")
+    features = fields.get("features") or {}
+    description = fields.get("description") or ""
+
+    parts: list[str] = [title]
+    if product_class and product_class.lower() != title.lower():
+        parts.append(product_class)
+    if category_path:
+        parts.append(" > ".join(category_path))
+    elif category and category != "Unknown":
+        parts.append(category)
+    attrs = [f"{k}: {features[k]}" for k in EMBED_FEATURE_KEYS if features.get(k)]
+    if attrs:
+        parts.append(", ".join(attrs))
+    if description:
+        parts.append(description[:EMBED_DESCRIPTION_CHARS])
+    return ". ".join(p.strip().rstrip(".") for p in parts if p and p.strip())

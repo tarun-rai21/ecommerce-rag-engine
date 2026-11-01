@@ -246,11 +246,13 @@ The script runs the production `ProductSearchService` in-process (no HTTP, no ca
 
 | Mode | nDCG@10 | Recall@100 | MRR@10 | P@10 | judged@10 | Search p50 / p95 |
 |---|---|---|---|---|---|---|
-| Dense only | 0.676 [0.642, 0.710] | 0.629 [0.583, 0.669] | 0.657 [0.605, 0.708] | 0.451 [0.404, 0.500] | 0.79 | 11 / 15 ms |
-| BM25 only | 0.659 [0.622, 0.695] | 0.659 [0.612, 0.701] | 0.723 [0.672, 0.771] | 0.460 [0.414, 0.506] | 0.79 | 7 / 10 ms |
-| **Hybrid (RRF)** | **0.728 [0.695, 0.760]** | **0.674 [0.628, 0.714]** | **0.744 [0.694, 0.790]** | **0.492 [0.443, 0.538]** | 0.85 | 12 / 15 ms |
+| Dense only | 0.676 [0.642, 0.710] | 0.629 [0.583, 0.669] | 0.657 [0.605, 0.708] | 0.451 [0.404, 0.500] | 0.79 | 15 / 33 ms |
+| BM25 only | 0.659 [0.622, 0.696] | 0.659 [0.612, 0.701] | 0.723 [0.672, 0.771] | 0.460 [0.414, 0.506] | 0.79 | 8 / 11 ms |
+| **Hybrid (RRF)** | **0.728 [0.695, 0.760]** | **0.675 [0.628, 0.715]** | **0.739 [0.689, 0.785]** | **0.492 [0.443, 0.539]** | 0.85 | 15 / 24 ms |
 
-Paired difference vs dense: **hybrid nDCG@10 +0.052 [+0.035, +0.069]**, Recall@100 +0.046 [+0.023, +0.070], both significant. BM25 alone vs dense: nDCG@10 −0.017 [−0.045, +0.008] (not significant). For reference, hybrid with the untuned default (`k=60`, 20 candidates) scores nDCG@10 0.701 on test.
+Paired difference vs dense: **hybrid nDCG@10 +0.052 [+0.036, +0.068]**, Recall@100 +0.046 [+0.024, +0.071], both significant. BM25 alone vs dense: nDCG@10 −0.017 [−0.045, +0.008] (not significant). For reference, hybrid with the untuned default (`k=60`, 20 candidates) scored nDCG@10 0.701 on test (measured before the tie-breaking fix below; results moved by at most ±0.002).
+
+**Reproducibility.** RRF often produces exact score ties (a product ranked *r*-th by dense alone scores the same as one ranked *r*-th by BM25 alone), and Qdrant returns tied points in an order that varies between runs. That shifted nDCG@10 by up to ±0.002 between identical runs. Both fusion paths and the single-retriever baselines now break ties by product id (fetching a few extra results so a tie at the cut-off can't change the set). Two consecutive test runs now produce identical top-10s for every query in every mode. Latency columns vary with machine load and are indicative only.
 
 **How the metrics are defined:**
 - **nDCG@10** (primary) uses graded gains: Exact = 2, Partial = 1.
@@ -259,6 +261,18 @@ Paired difference vs dense: **hybrid nDCG@10 +0.052 [+0.035, +0.069]**, Recall@1
 - **Duplicate judgments:** 1,467 (query, product) pairs are judged more than once and 14 disagree; the highest label is kept.
 - **Top-10 vs depth-100:** top-10 metrics come from a `limit=10` search with the production settings; Recall@100 comes from a separate `limit=100` search.
 - **Search latency** excludes query embedding and is measured on a laptop with Qdrant in Docker.
+
+### Cross-encoder reranking: tested, not enabled
+
+A cross-encoder reranker (`src/backend/services/rerank.py`) can re-score the top 20 hybrid results by reading the query and product text together. It runs under a time budget and falls back to the RRF order on timeout or error. It's **off by default** (`RERANK_ENABLED=false`) because, on the dev split, no CPU-feasible model cleared the bar set before the experiment: a gain over plain hybrid that is statistically significant *and* at least +0.010 nDCG@10.
+
+| Model (top 20 re-scored) | nDCG@10 vs hybrid (dev, 179 queries) | Added latency p50 / p95 |
+|---|---|---|
+| `Xenova/ms-marco-MiniLM-L-6-v2` | +0.012 [−0.003, +0.028] | +0.78 s / +1.1 s |
+| `jinaai/jina-reranker-v1-tiny-en` | +0.013 [−0.003, +0.029] | +0.64 s / +0.9 s |
+| `jinaai/jina-reranker-v1-turbo-en` | +0.013 [−0.002, +0.030] | +0.99 s / +1.5 s |
+
+The gain is consistent across models but too small to separate from noise on 179 queries, and it would multiply search latency by about 40× on this CPU. `BAAI/bge-reranker-base` (3.1 pairs/s here, about 6.5 s for 20 candidates) was ruled out on speed before any accuracy run. These rerankers were trained on web passages (MS MARCO), not product listings, which may limit transfer. A domain-tuned reranker or GPU serving would change the trade-off; to try it, set `RERANK_ENABLED=true` and `RERANK_MODEL`, and evaluate with `--modes hybrid hybrid_rerank --baseline hybrid`. The test split wasn't used for any reranker decision.
 
 ### Smoke evaluation (original 39-product demo catalog)
 
@@ -347,6 +361,8 @@ ecommerce-rag-engine/
 
 │   │       ├── search.py     # Hybrid search + RRF
 
+│   │       ├── rerank.py     # Optional cross-encoder reranker (off by default)
+
 │   │       ├── cache.py      # Redis cache service
 
 │   │       └── llm.py        # Groq LLM service
@@ -392,6 +408,7 @@ ecommerce-rag-engine/
 
 - **Synthetic prices**: WANDS has no prices; the ones shown are generated and must not be read as real.
 - **Answer quality isn't measured yet**: retrieval is benchmarked on WANDS, but answers aren't. An LLM-judge check of answers against the retrieved context is planned.
+- **No reranker**: cross-encoder reranking was evaluated and left off (gain not significant on dev, about +0.7–1.0 s per query on CPU); see above.
 - **Over-strict refusals**: the prompt tells the model to refuse when the context lacks a requested detail. For example, "grey area rug 8x10" retrieves grey rugs, but size isn't among the attributes passed to the LLM, so it refuses.
 - **No filters yet**: payload indexes exist, but query parsing into filters ("under $200", category) isn't implemented, so constraints aren't enforced by retrieval.
 - **Incomplete judgments**: about 20% of top-10 results have no WANDS judgment and count as irrelevant, so absolute scores are pessimistic.

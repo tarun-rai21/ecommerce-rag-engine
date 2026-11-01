@@ -4,6 +4,8 @@ from loguru import logger
 
 from src.backend.api.middleware import RequestTimingMiddleware
 from src.backend.api.v1.router import router as v1_router
+from config.settings import settings
+from src.backend.services.rerank import RerankerService
 from src.backend.services.search import ProductSearchService
 from src.backend.services.cache import CacheService
 from src.backend.services.llm import LLMService
@@ -12,7 +14,15 @@ from src.backend.services.llm import LLMService
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up — connecting to Qdrant and Redis.")
-    app.state.search_service = ProductSearchService()
+    reranker = (
+        RerankerService(
+            settings.RERANK_MODEL,
+            candidates=settings.RERANK_CANDIDATES,
+            timeout_seconds=settings.RERANK_TIMEOUT_SECONDS,
+        )
+        if settings.RERANK_ENABLED else None
+    )
+    app.state.search_service = ProductSearchService(reranker=reranker)
     app.state.cache_service = CacheService()
     app.state.llm_service = LLMService()
     yield

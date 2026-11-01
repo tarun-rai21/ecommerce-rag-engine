@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     # Both paths use RRF_K, so they must produce the same ranking.
     USE_NATIVE_FUSION: bool = True
 
+    # ── Reranking ─────────────────────────────────────────
+    # Off: on the WANDS dev split no CPU-feasible model gave a significant gain over
+    # hybrid (+0.012–0.013 nDCG@10, CIs include 0) for +0.7–1.0 s/query. See README.
+    RERANK_ENABLED: bool = False
+    RERANK_MODEL: str = "Xenova/ms-marco-MiniLM-L-6-v2"
+    RERANK_CANDIDATES: int = Field(default=20, ge=2)
+    RERANK_TIMEOUT_SECONDS: float = Field(default=2.0, gt=0)
+
     # ── LLM ───────────────────────────────────────────────
     GROQ_API_KEY: str = ""
     # llama-3.1-8b-instant was retired by Groq (404 model_not_found, 2026-11-01).

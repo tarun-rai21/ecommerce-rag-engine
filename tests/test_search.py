@@ -22,6 +22,14 @@ def test_rrf_fuse_formula_and_order():
     assert [pid for pid, _, _ in fused][:2] == ["b", "a"]
 
 
+def test_rrf_ties_broken_by_id_deterministically():
+    # "z" and "a" both appear once at rank 1 → exactly equal scores.
+    fused = rrf_fuse([[_p("z")], [_p("a")]], k=60, limit=2)
+    assert [pid for pid, _, _ in fused] == ["a", "z"]
+    fused_swapped = rrf_fuse([[_p("a")], [_p("z")]], k=60, limit=2)
+    assert [pid for pid, _, _ in fused_swapped] == ["a", "z"]
+
+
 def test_rrf_k_changes_consensus_vs_top_rank():
     # A: rank 1 in one list only. B: rank 4 in both lists.
     l1 = [_p("A"), _p("x1"), _p("x2"), _p("B")]

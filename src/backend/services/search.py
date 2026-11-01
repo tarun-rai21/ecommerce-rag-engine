@@ -10,18 +10,19 @@ from qdrant_client.models import (
 )
 
 from config.settings import settings
+from src.backend.services.rerank import RerankerService
 from src.ingestion.embedder import ProductEmbedder
 
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
-SearchMode = Literal["hybrid", "dense", "sparse"]
+SearchMode = Literal["hybrid", "hybrid_rerank", "dense", "sparse"]
 
 
 def rrf_fuse(ranked_lists: list[list], k: int, limit: int) -> list[tuple[object, float, dict]]:
     """Reciprocal Rank Fusion: score(d) = Σ_m 1 / (k + rank_m(d)), rank starting at 1.
 
     Each input list holds Qdrant points (``.id``, ``.payload``) in rank order.
-    Returns (point_id, score, payload) sorted by score, ties broken by first appearance.
+    Returns (point_id, score, payload) sorted by score, ties broken by id.
     """
     scores: dict[object, float] = {}
     payloads: dict[object, dict] = {}
@@ -29,8 +30,19 @@ def rrf_fuse(ranked_lists: list[list], k: int, limit: int) -> list[tuple[object,
         for rank, hit in enumerate(hits, start=1):
             scores[hit.id] = scores.get(hit.id, 0.0) + 1.0 / (k + rank)
             payloads.setdefault(hit.id, hit.payload or {})
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:limit]
+    ranked = sorted(scores.items(), key=lambda x: _rank_key(x[0], x[1]))[:limit]
     return [(doc_id, score, payloads[doc_id]) for doc_id, score in ranked]
+
+
+# RRF produces exact ties often: a product ranked r-th by dense only scores the same
+# as one ranked r-th by BM25 only. Qdrant returns tied points in an order that varies
+# between runs, so both fusion paths sort by (score, id). Scores are rounded because
+# Qdrant computes them in float32 and rrf_fuse in float64.
+TIE_SLACK = 10  # extra native results fetched so a tie at the cut-off can't change the set
+
+
+def _rank_key(point_id: object, score: float) -> tuple[float, str]:
+    return (-round(score, 6), str(point_id))
 
 
 def _to_result(point_id: object, score: float, payload: dict) -> dict:
@@ -47,6 +59,7 @@ class ProductSearchService:
         rrf_k: int | None = None,
         prefetch_limit: int | None = None,
         use_native_fusion: bool | None = None,
+        reranker: RerankerService | None = None,
     ) -> None:
         self.client = client or AsyncQdrantClient(
             host=settings.QDRANT_HOST,
@@ -60,6 +73,7 @@ class ProductSearchService:
         self.use_native_fusion = (
             settings.USE_NATIVE_FUSION if use_native_fusion is None else use_native_fusion
         )
+        self.reranker = reranker
 
     def _prefetch(self, limit: int) -> int:
         # Each fusion leg needs at least `limit` candidates to fill the result list.
@@ -84,10 +98,11 @@ class ProductSearchService:
                 Prefetch(query=sparse_vector, using=SPARSE_VECTOR_NAME, limit=self._prefetch(limit)),
             ],
             query=RrfQuery(rrf=Rrf(k=self.rrf_k)),
-            limit=limit,
+            limit=limit + TIE_SLACK,
             with_payload=True,
         )
-        return [_to_result(hit.id, hit.score, hit.payload or {}) for hit in results.points]
+        hits = sorted(results.points, key=lambda h: _rank_key(h.id, h.score))[:limit]
+        return [_to_result(hit.id, hit.score, hit.payload or {}) for hit in hits]
 
     # ── Client-side RRF (two parallel queries) ────────────
     async def _python_fusion_search(
@@ -118,15 +133,25 @@ class ProductSearchService:
             collection_name=self.collection_name,
             query=vector,
             using=using,
-            limit=limit,
+            limit=limit + TIE_SLACK,
             with_payload=True,
         )
-        return [_to_result(hit.id, hit.score, hit.payload or {}) for hit in results.points]
+        # BM25 scores tie often (same matched terms, same length); same rule as fusion.
+        hits = sorted(results.points, key=lambda h: (-h.score, str(h.id)))[:limit]
+        return [_to_result(hit.id, hit.score, hit.payload or {}) for hit in hits]
 
     # ── Public Entry Point ────────────────────────────────
-    async def search(self, query: str, limit: int = 5, mode: SearchMode = "hybrid") -> list[dict]:
-        """mode: 'hybrid' (dense + BM25 fused with RRF), or 'dense' / 'sparse' alone
-        (used as evaluation baselines)."""
+    async def search(self, query: str, limit: int = 5, mode: SearchMode | None = None) -> list[dict]:
+        """mode: 'hybrid' (dense + BM25 fused with RRF), 'hybrid_rerank' (hybrid, then
+        a cross-encoder reorders the top candidates), or 'dense' / 'sparse' alone
+        (evaluation baselines). Default: 'hybrid_rerank' if a reranker is configured,
+        else 'hybrid'."""
+        mode = mode or ("hybrid_rerank" if self.reranker else "hybrid")
+        if mode not in ("hybrid", "hybrid_rerank", "dense", "sparse"):
+            raise ValueError(f"Unknown search mode: {mode!r}")
+        if mode == "hybrid_rerank" and self.reranker is None:
+            raise ValueError("mode 'hybrid_rerank' needs a reranker")
+
         dense_vector, sparse = await self._vectorize_query(query)
         sparse_vector = SparseVector(indices=sparse["indices"], values=sparse["values"])
 
@@ -134,12 +159,14 @@ class ProductSearchService:
             results = await self._single_search(dense_vector, DENSE_VECTOR_NAME, limit)
         elif mode == "sparse":
             results = await self._single_search(sparse_vector, SPARSE_VECTOR_NAME, limit)
-        elif mode == "hybrid" and self.use_native_fusion:
-            results = await self._native_fusion_search(dense_vector, sparse_vector, limit)
-        elif mode == "hybrid":
-            results = await self._python_fusion_search(dense_vector, sparse_vector, limit)
         else:
-            raise ValueError(f"Unknown search mode: {mode!r}")
+            fetch = max(limit, self.reranker.candidates) if mode == "hybrid_rerank" else limit
+            if self.use_native_fusion:
+                results = await self._native_fusion_search(dense_vector, sparse_vector, fetch)
+            else:
+                results = await self._python_fusion_search(dense_vector, sparse_vector, fetch)
+            if mode == "hybrid_rerank":
+                results = (await self.reranker.rerank(query, results)).results[:limit]
 
         logger.debug(f"{mode} search returned {len(results)} results for query: '{query}'")
         return results
