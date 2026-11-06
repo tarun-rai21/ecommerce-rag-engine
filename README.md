@@ -307,6 +307,43 @@ WANDS queries never state a budget, so the benchmark adds one. For each test que
 
 Pre-filtering vs no parsing: **+0.257 nDCG@10** [+0.227, +0.288]; vs post-filtering: **+0.165** [+0.144, +0.189]. Without parsing, half of what's shown is over budget. Post-filtering never violates the budget but leaves half the page empty. Prices are synthetic, so this measures filter mechanics, not real-world price behaviour.
 
+### Answer quality
+
+```bash
+python -m src.evaluation.generation_eval
+python -m src.evaluation.generation_eval --calibrate src/evaluation/judge_labels.csv
+```
+
+100 queries go through the production path (parsing, hybrid search, context, generator): 50 WANDS dev queries, 20 more with a budget appended, and 30 hand-written queries for products a home-goods catalog doesn't stock, each checked against the catalog's top results. An LLM judge from a different model family (`qwen/qwen3.8-27b`) audits each answer against its context, and rule-based checks cover refusals, prices and wording. 95% bootstrap CIs.
+
+| Metric | Result |
+|---|---|
+| Correct refusal, out-of-catalog | 100% (30/30) |
+| Refusal on in-catalog queries | 15.7% [7.1%, 24.3%] (11/70) |
+| ...when an Exact product was among the 5 retrieved | 3.8% [0.0%, 9.4%] (2/53) |
+| Claims the judge found supported | 99.1% [98.5%, 99.7%] (1,348 of 1,361) |
+| Answers with every claim supported (judge) | 84.7% [74.6%, 93.2%]; see calibration below |
+| Relevance (judge, 1-5) | 4.90 [4.80, 4.98] |
+| Answers quoting a price not in the context | 0% (0/59) |
+| Answers claiming to cover the whole catalog | 1.7% (1/59) |
+
+Nine of the 11 in-catalog refusals had no Exact product in the context, so most trace back to retrieval, or to a requested detail such as a brand or finish that wasn't there. Refusing is defensible in those cases.
+
+**Prompt iteration.** The first version told shoppers "these are the only products in our catalog" in 25% of answers (15/59), although the model sees 5 products. Two prompt revisions brought this to 1.7%, a paired change of −22 points [−36, −10], with no significant change in supported claims (−0.2 points [−1.0, +0.8]). Answers grew about 20% longer. The same 100 queries were used to develop the prompt and report these results, and the WANDS queries all come from the dev split, so treat them as development numbers rather than a held-out estimate.
+
+**Judge calibration: the judge is lenient.** A second AI reviewer (Claude Opus 5.5, not a human) labelled 30 answers against their context, with the sheet in `src/evaluation/judge_labels.csv`:
+
+| | |
+|---|---|
+| Every claim supported? | 77% agreement, Cohen's κ 0.46 |
+| Rated fully supported | Reviewer 60%, judge 83% |
+| Relevance | 87% exact, 100% within 1 point |
+| Disagreements on support | 7, all where the reviewer found a problem the judge passed |
+
+Read 84.7% as an upper estimate. The misses are mostly small embellishments ("classic design", a product name read as a material). Limits: the reviewer is an AI, it had already seen the judge's flagged claims for this run, so agreement may be inflated, it marked an answer down for a single unsupported word, and 30 answers is a small sample. A human review is still needed before calling the judge human-validated.
+
+Every LLM call is cached by its full request in `.cache/llm_calls.sqlite`, so an unchanged re-run is free. A cold run takes about 1.5 hours on Groq's free tier.
+
 ### Cross-encoder reranking: tested, not enabled
 
 A cross-encoder reranker (`src/backend/services/rerank.py`) can re-score the top 20 hybrid results by reading the query and product text together. It runs under a time budget and falls back to the RRF order on timeout or error. It's **off by default** (`RERANK_ENABLED=false`) because, on the dev split, no CPU-feasible model cleared the bar set before the experiment: a gain over plain hybrid that is statistically significant *and* at least +0.010 nDCG@10.
@@ -433,6 +470,10 @@ ecommerce-rag-engine/
 │       ├── retrieval_eval.py # WANDS benchmark: dense vs BM25 vs hybrid
 
 │       ├── filter_eval.py    # Price-constrained benchmark: no parsing vs post- vs pre-filter
+│       ├── generation_eval.py # Answer quality: refusals, faithfulness, relevance, calibration
+│       ├── judge.py          # LLM judge, rule-based answer checks, cached LLM calls
+│       ├── out_of_catalog.json # Queries the catalog can't answer
+│       ├── judge_labels.csv  # Reviewer labels used to calibrate the judge
 
 │       ├── ground_truth.json # 15 queries for the demo catalog
 
@@ -456,7 +497,7 @@ ecommerce-rag-engine/
 ## Known Limitations & Future Work
 
 - **Synthetic prices**: WANDS has no prices; the ones shown are generated and must not be read as real.
-- **Answer quality isn't measured yet**: retrieval is benchmarked on WANDS, but answers aren't. An LLM-judge check of answers against the retrieved context is planned.
+- **Answer quality has no human validation yet**: the judge was calibrated against an AI reviewer that wasn't fully blind, on 30 answers. It also misses subtle embellishments, so its faithfulness scores are upper estimates.
 - **No reranker**: cross-encoder reranking was evaluated and left off (gain not significant on dev, about +0.7–1.0 s per query on CPU); see above.
 - **Over-strict refusals**: the prompt tells the model to refuse when the context lacks a requested detail. For example, "grey area rug 8x10" retrieves grey rugs, but size isn't among the attributes passed to the LLM, so it refuses.
 - **Constraint parsing covers price and rating only**, in English patterns. Categories aren't inferred from text (by design), and other attributes ("8x10", "walnut") are left to ranking rather than enforced as filters.

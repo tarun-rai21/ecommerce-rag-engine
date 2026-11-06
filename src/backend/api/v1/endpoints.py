@@ -85,7 +85,9 @@ def build_context(results: list[dict], filters: SearchFilters | None = None) -> 
         if r.get("rating") is not None:
             fields.append(f"Rating: {r['rating']:.1f}/5 ({r.get('review_count') or 0} reviews)")
         if r.get("features"):
-            fields.append("Attributes: " + ", ".join(f"{k}: {v}" for k, v in r["features"].items()))
+            # Sorted: payload maps arrive in a different order per process, which would
+            # change the prompt (and defeat response caching) for the same product.
+            fields.append("Attributes: " + ", ".join(f"{k}: {v}" for k, v in sorted(r["features"].items())))
         description = (r.get("description") or "")[:CONTEXT_DESCRIPTION_CHARS]
         fields.append(f"Description: {description}")
         lines.append("- " + " | ".join(fields))
