@@ -17,10 +17,25 @@ from config.settings import settings
 from src.backend.services.query_parser import SearchFilters
 from src.backend.services.rerank import RerankerService
 from src.ingestion.embedder import ProductEmbedder
+from src.ingestion.schemas import size_token
 
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "sparse"
 SearchMode = Literal["hybrid", "hybrid_rerank", "dense", "sparse"]
+# A size preference re-orders this many of the query's best matches. Chosen with size_eval:
+# the deepest setting where results still matching the rest of the query fall at most 2
+# points (15: -0.5). Deeper finds more sizes but loses relevance (100: -8.5).
+SIZE_CANDIDATES = 15
+
+
+def size_first(results: list[dict], size: str, limit: int) -> list[dict]:
+    """Products sold in `size` first, otherwise keeping relevance order.
+
+    A preference, not a filter: 60% of rugs list no size, and only the query's best
+    matches are re-ordered, so "8x10 picture frame" can't turn into 8x10 rugs."""
+    has_size = [r for r in results if size in {size_token(s) for s in r.get("sizes") or []}]
+    matched = {id(r) for r in has_size}
+    return (has_size + [r for r in results if id(r) not in matched])[:limit]
 
 
 def rrf_fuse(ranked_lists: list[list], k: int, limit: int) -> list[tuple[object, float, dict]]:
@@ -162,6 +177,7 @@ class ProductSearchService:
         limit: int = 5,
         mode: SearchMode | None = None,
         filters: SearchFilters | None = None,
+        prefer_size: str | None = None,
     ) -> list[dict]:
         """mode: 'hybrid' (dense + BM25 fused with RRF), 'hybrid_rerank' (hybrid, then
         a cross-encoder reorders the top candidates), or 'dense' / 'sparse' alone
@@ -169,7 +185,12 @@ class ProductSearchService:
         else 'hybrid'.
 
         filters: hard constraints applied as Qdrant payload filters (every result
-        satisfies them). Parse them from text first with query_parser.parse_query."""
+        satisfies them). Parse them from text first with query_parser.parse_query.
+
+        prefer_size: e.g. "8x10"; products sold in that size rank first (see size_first)."""
+        if prefer_size:
+            wider = await self.search(query, max(limit, SIZE_CANDIDATES), mode, filters)
+            return size_first(wider, prefer_size, limit)
         mode = mode or ("hybrid_rerank" if self.reranker else "hybrid")
         if mode not in ("hybrid", "hybrid_rerank", "dense", "sparse"):
             raise ValueError(f"Unknown search mode: {mode!r}")

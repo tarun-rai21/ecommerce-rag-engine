@@ -65,6 +65,14 @@ _RATING = re.compile(
 )
 
 
+# "8 x 10", "8' x 10'", "8ft by 10ft" -> size "8x10". Only room-scale numbers: "22 x 36"
+# is more likely inches, and stays in the text to match titles like "22 '' x 36 ''".
+_FEET_PAIR = re.compile(
+    r"(?<![\d.])(\d{1,2})\s*(?:'|ft\b|feet\b)?\s*(?:x|×|by)\s*(\d{1,2})(?:\s*(?:'|ft\b|feet\b))?(?![\d.])", re.I,
+)
+MAX_ROOM_FEET = 15
+
+
 class SearchFilters(BaseModel):
     """Structured constraints applied as Qdrant payload filters (never as text)."""
 
@@ -97,6 +105,7 @@ class SearchFilters(BaseModel):
 class ParsedQuery(BaseModel):
     text: str               # query with constraint phrases removed; used for retrieval
     filters: SearchFilters
+    size: str | None = None  # "8x10": a ranking preference, never a filter (see search.py)
 
 
 def _to_float(whole: str, frac: str | None) -> float:
@@ -136,7 +145,14 @@ def parse_query(query: str) -> ParsedQuery:
 
     cleaned = re.sub(r"\s+", " ", text).strip(" ,.-")
     cleaned = re.sub(r"\b(?:and|with|for|that|priced|costing)$", "", cleaned, flags=re.I).strip(" ,.-")
+    size = None
+    if (m := _FEET_PAIR.search(cleaned)) and max(int(m.group(1)), int(m.group(2))) <= MAX_ROOM_FEET:
+        without = re.sub(r"\s+", " ", _remove(cleaned, m)).strip(" ,.-")
+        if without:  # a query that is only a size still needs text to search with
+            a, b = sorted((int(m.group(1)), int(m.group(2))))
+            size, cleaned = f"{a}x{b}", without
     return ParsedQuery(
         text=cleaned or query.strip(),
         filters=SearchFilters(min_price=min_price, max_price=max_price, min_rating=min_rating),
+        size=size,
     )

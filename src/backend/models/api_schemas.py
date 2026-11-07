@@ -29,6 +29,7 @@ class SearchResponseEnvelope(BaseModel):
     latency_ms: float
     interpreted_query: str          # text actually used for retrieval
     applied_filters: SearchFilters  # parsed + explicit, as applied in Qdrant
+    preferred_size: str | None = None  # products in this size rank first, e.g. "8x10"
 
 
 # ── Diagnostic fields for /ask endpoint ──────────────────
@@ -59,6 +60,7 @@ class AskResponseEnvelope(BaseModel):
     timing: TimingBreakdown
     interpreted_query: str
     applied_filters: SearchFilters
+    preferred_size: str | None = None
 
 
 class FacetValue(BaseModel):

@@ -108,6 +108,7 @@ elif search_clicked and query.strip():
             applied = describe_filters(data.get("applied_filters") or {})
             st.session_state.last_interpretation = (
                 f"Searched for “{data.get('interpreted_query', query)}”" + (f" · Filters: {applied}" if applied else "")
+                + (f" · {data['preferred_size']} sizes first" if data.get("preferred_size") else "")
             )
 
         except requests.exceptions.ConnectionError:

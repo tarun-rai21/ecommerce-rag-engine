@@ -14,9 +14,9 @@ class FakeSearch:
         self.calls: list[dict] = []
         self.n_results = n_results
 
-    async def search(self, query, limit=5, mode=None, filters=None):
+    async def search(self, query, limit=5, mode=None, filters=None, prefer_size=None):
         self.limits.append(limit)
-        self.calls.append({"query": query, "filters": filters})
+        self.calls.append({"query": query, "filters": filters, "prefer_size": prefer_size})
         return [
             {"id": str(100 + i), "score": 1 / (60 + i + 1), "title": f"P{i}",
              "description": "d", "price": 9.99, "category": "c"}
@@ -177,3 +177,12 @@ def test_facets_endpoint(make_client):
     r = c.get("/api/v1/facets", params={"key": "category"}).json()
     assert r["key"] == "category" and r["values"][0] == {"value": "Furniture", "count": 3}
     assert c.get("/api/v1/facets", params={"key": "description"}).status_code == 422
+
+
+def test_size_in_query_becomes_a_preference(make_client):
+    search, llm = FakeSearch(), FakeLLM()
+    c = make_client(search=search, llm=llm)
+    r = c.post("/api/v1/ask", json={"q": "grey area rug 8 x 10", "limit": 3}).json()
+    call = search.calls[-1]
+    assert call["query"] == "grey area rug" and call["prefer_size"] == "8x10" and call["filters"].is_empty()
+    assert r["preferred_size"] == "8x10" and r["interpreted_query"] == "grey area rug"

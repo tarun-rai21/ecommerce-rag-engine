@@ -151,7 +151,7 @@ def ungrounded_prices(answer: str, context: str) -> list[float]:
 
 # ── Cached, rate-limit-aware LLM calls ────────────────────
 class CachedLLM:
-    def __init__(self, client: Groq, cache_path: Path = DEFAULT_CACHE, max_wait_s: float = 90.0, max_tries: int = 8):
+    def __init__(self, client: Groq, cache_path: Path = DEFAULT_CACHE, max_wait_s: float = 90.0, max_tries: int = 30):
         self.client, self.max_wait_s, self.max_tries = client, max_wait_s, max_tries
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(cache_path)

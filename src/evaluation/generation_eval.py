@@ -65,6 +65,9 @@ SAMPLE_SEED = 7
 N_PLAIN, N_CONSTRAINED = 50, 20
 TOP_K = 5
 JUDGE_PARAMS = {"temperature": 0.0, "max_tokens": 1200, "response_format": {"type": "json_object"}}
+RELEVANCE_PARAMS = {**JUDGE_PARAMS, "max_tokens": 30}  # one number; don't reserve the judge's output budget
+SIZED_RUGS = ("grey area rug", "blue rug", "persian rug", "shag rug", "wool rug")
+SIZED_SIZES = ("8x10", "5x8")
 
 
 # ── Sample ────────────────────────────────────────────────
@@ -82,6 +85,8 @@ async def build_sample(service: ProductSearchService) -> list[dict]:
                       "query": f"{q.text} under ${budget:.0f}", "exact": sorted(q.exact)})
     ooc = json.loads(OOC_PATH.read_text(encoding="utf-8"))["queries"]
     items += [{"item_id": f"ooc:{i}", "segment": "ooc", "query": text, "exact": []} for i, text in enumerate(ooc)]
+    items += [{"item_id": f"sized:{rug} {size}", "segment": "sized", "query": f"{rug} {size}", "exact": []}
+              for rug in SIZED_RUGS for size in SIZED_SIZES]
     return items
 
 
@@ -93,7 +98,7 @@ def generator_params() -> dict:
 
 async def evaluate_item(item: dict, service: ProductSearchService, llm: CachedLLM) -> dict:
     resolved = resolve_query(SearchQueryRequest(q=item["query"], limit=TOP_K))
-    results = await service.search(resolved.text, limit=TOP_K, filters=resolved.filters)
+    results = await service.search(resolved.text, limit=TOP_K, filters=resolved.filters, prefer_size=resolved.size)
     row = {**item, "retrieved": [str(r["id"]) for r in results],
            "retrieved_titles": [r.get("title", "") for r in results]}
     row["exact_in_context"] = bool(set(row["retrieved"]) & set(item["exact"]))
@@ -103,7 +108,7 @@ async def evaluate_item(item: dict, service: ProductSearchService, llm: CachedLL
                    claims=[], relevance=None, faithfulness=None, fully_faithful=None, judge_error=None)
         return row
 
-    context = build_context(results, resolved.filters)
+    context = build_context(results, resolved.filters, resolved.size)
     answer = clean_output(llm.complete(settings.LLM_MODEL, build_messages(item["query"], context), **generator_params()))
     row.update(context=context, answer=answer, refused=is_refusal(answer),
                ungrounded_prices=ungrounded_prices(answer, context))
@@ -114,7 +119,7 @@ async def evaluate_item(item: dict, service: ProductSearchService, llm: CachedLL
     judgment = parse_judgment(llm.complete(JUDGE_MODEL, judge_messages(item["query"], context, answer), **JUDGE_PARAMS))
     if judgment.relevance is None and judgment.parse_error is None:
         judgment.relevance = parse_judgment(
-            llm.complete(JUDGE_MODEL, relevance_messages(item["query"], answer), **JUDGE_PARAMS)).relevance
+            llm.complete(JUDGE_MODEL, relevance_messages(item["query"], answer), **RELEVANCE_PARAMS)).relevance
     row.update(claims=judgment.claims, relevance=judgment.relevance, faithfulness=judgment.faithfulness,
                fully_faithful=judgment.fully_faithful, judge_error=judgment.parse_error)
     return row
@@ -158,7 +163,7 @@ def summarize(rows: list[dict]) -> dict:
             "ooc_correct_refusal": _rate([r["refused"] for r in ooc]),
             "in_catalog_false_refusal": _rate([r["refused"] for r in in_cat]),
             "false_refusal_when_exact_retrieved": _rate([r["refused"] for r in in_cat if r["exact_in_context"]]),
-            "by_segment": {s: _rate([r["refused"] for r in seg(s)]) for s in ("plain", "constrained", "ooc")},
+            "by_segment": {s: _rate([r["refused"] for r in seg(s)]) for s in ("plain", "constrained", "ooc", "sized")},
         },
         "faithfulness": {
             "mean_supported_share": _mean([r["faithfulness"] for r in judged]),
@@ -166,7 +171,7 @@ def summarize(rows: list[dict]) -> dict:
             "claims_total": sum(len(r["claims"]) for r in judged),
             "claims_unsupported": sum(not c["supported"] for r in judged for c in r["claims"]),
             "by_segment": {s: _mean([r["faithfulness"] for r in judged if r["segment"] == s])
-                           for s in ("plain", "constrained", "ooc")},
+                           for s in ("plain", "constrained", "ooc", "sized")},
         },
         "relevance": {
             "mean": _mean([float(r["relevance"]) for r in answered if r["relevance"] is not None and r["segment"] != "ooc"]),
@@ -191,7 +196,7 @@ def to_markdown(s: dict) -> str:
 
     r, f = s["refusal"], s["faithfulness"]
     lines = [
-        f"Items: {s['n_items']} (50 plain + 20 budget-constrained WANDS dev queries, 30 out-of-catalog). "
+        f"Items: {s['n_items']} (50 plain + 20 budget-constrained WANDS dev queries, 30 out-of-catalog, 10 rug queries with a size). "
         f"Generator `{settings.LLM_MODEL}`, judge `{JUDGE_MODEL}`.",
         "",
         "| Metric | Value [95% CI] |",

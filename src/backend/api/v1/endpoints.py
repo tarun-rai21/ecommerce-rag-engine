@@ -19,6 +19,7 @@ from src.backend.services.search import ProductSearchService
 from src.backend.services.cache import CacheService
 from src.backend.services.llm import LLMService, REFUSAL_MESSAGE
 from src.backend.services.query_parser import ParsedQuery, SearchFilters, parse_query
+from src.ingestion.schemas import size_token
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ def resolve_query(request: SearchQueryRequest) -> ParsedQuery:
     parsed = parse_query(request.q) if request.parse_filters else ParsedQuery(
         text=request.q.strip(), filters=SearchFilters())
     explicit = request.filters or SearchFilters()
-    return ParsedQuery(text=parsed.text, filters=explicit.merged_over(parsed.filters))
+    return ParsedQuery(text=parsed.text, filters=explicit.merged_over(parsed.filters), size=parsed.size)
 
 
 def describe_filters(filters: SearchFilters) -> str:
@@ -68,9 +69,10 @@ def describe_filters(filters: SearchFilters) -> str:
 # Descriptions can run to 2,000 chars; five full ones would cost ~2.5k prompt tokens
 # per request against an 8k tokens/min free-tier limit.
 CONTEXT_DESCRIPTION_CHARS = 400
+CONTEXT_MAX_SIZES = 20
 
 
-def build_context(results: list[dict], filters: SearchFilters | None = None) -> str:
+def build_context(results: list[dict], filters: SearchFilters | None = None, prefer_size: str | None = None) -> str:
     lines = []
     if filters and not filters.is_empty():
         # Products were retrieved under these hard filters; telling the model avoids
@@ -88,6 +90,16 @@ def build_context(results: list[dict], filters: SearchFilters | None = None) -> 
             # Sorted: payload maps arrive in a different order per process, which would
             # change the prompt (and defeat response caching) for the same product.
             fields.append("Attributes: " + ", ".join(f"{k}: {v}" for k, v in sorted(r["features"].items())))
+        if r.get("sizes"):
+            shown = r["sizes"][:CONTEXT_MAX_SIZES]
+            more = len(r["sizes"]) - len(shown)
+            fields.append("Available sizes: " + ", ".join(shown) + (f" and {more} more" if more else ""))
+            # Catalog sizes rarely read as the shopper's: a 7' 10" x 10' 2" rug is sold as an 8x10.
+            matching = [s for s in r["sizes"] if size_token(s) == prefer_size]
+            if matching:
+                fields.append(f"Matches the requested {prefer_size} size: " + ", ".join(matching))
+        if r.get("dimensions"):
+            fields.append("Overall dimensions (inches): " + ", ".join(f"{k} {v}" for k, v in sorted(r["dimensions"].items())))
         description = (r.get("description") or "")[:CONTEXT_DESCRIPTION_CHARS]
         fields.append(f"Description: {description}")
         lines.append("- " + " | ".join(fields))
@@ -102,7 +114,9 @@ async def search_products(
 ) -> SearchResponseEnvelope:
     start = time.perf_counter()
     resolved = resolve_query(request)
-    raw_results = await service.search(query=resolved.text, limit=request.limit, filters=resolved.filters)
+    raw_results = await service.search(
+        query=resolved.text, limit=request.limit, filters=resolved.filters, prefer_size=resolved.size,
+    )
 
     results = [
         ProductSearchResult(
@@ -118,7 +132,7 @@ async def search_products(
     ]
     return SearchResponseEnvelope(
         results=results, latency_ms=_ms(start),
-        interpreted_query=resolved.text, applied_filters=resolved.filters,
+        interpreted_query=resolved.text, applied_filters=resolved.filters, preferred_size=resolved.size,
     )
 
 
@@ -173,7 +187,7 @@ async def ask_products(
     logger.info(f"[CACHE MISS] query='{request.q}' → text='{resolved.text}' filters={resolved.filters.model_dump(exclude_defaults=True)}")
     search_start = time.perf_counter()
     raw_results = await search_service.search(
-        query=resolved.text, limit=request.limit, filters=resolved.filters,
+        query=resolved.text, limit=request.limit, filters=resolved.filters, prefer_size=resolved.size,
     )
     search_ms = _ms(search_start)
 
@@ -188,12 +202,13 @@ async def ask_products(
             ),
             interpreted_query=resolved.text,
             applied_filters=resolved.filters,
+            preferred_size=resolved.size,
         )
 
     # Step 3: LLM generation over the retrieved context
     llm_start = time.perf_counter()
     llm_result = await llm_service.generate_answer(
-        query=request.q, context=build_context(raw_results, resolved.filters),
+        query=request.q, context=build_context(raw_results, resolved.filters, resolved.size),
     )
     llm_ms = _ms(llm_start)
 
@@ -217,6 +232,7 @@ async def ask_products(
         ),
         interpreted_query=resolved.text,
         applied_filters=resolved.filters,
+        preferred_size=resolved.size,
     )
 
     # Step 4: Cache write — successful generations only, never fallback messages.

@@ -46,8 +46,6 @@ def test_parses_constraints(query, text, min_price, max_price, min_rating):
     "5 drawer dresser",
     "led 60",
     "zachary 72.5",
-    "carpet 5x6",
-    "rug 8x10 under 3x5",              # sizes after 'under'
     "over 200 thread count sheets",    # 'over' needs a currency marker
     "wisdom stone river 3-3/4",
 ])
@@ -74,3 +72,9 @@ def test_filters_validation_and_merge():
     assert merged.max_price == 200 and merged.min_rating == 4 and merged.categories == ["Rugs"]
     # explicit max below a parsed min: the explicit value wins, the conflicting min is dropped
     assert SearchFilters(max_price=50).merged_over(SearchFilters(min_price=100)).min_price is None
+
+
+def test_sizes_are_never_read_as_prices():
+    parsed = parse_query("rug 8x10 under 3x5")
+    assert parsed.filters.is_empty() and parsed.size == "8x10"
+    assert parse_query("carpet 5x6").filters.is_empty()

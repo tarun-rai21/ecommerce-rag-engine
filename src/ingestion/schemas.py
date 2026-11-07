@@ -1,3 +1,4 @@
+import re
 import uuid
 from pydantic import BaseModel, Field, field_validator
 from typing import Any, Mapping
@@ -12,6 +13,15 @@ EMBED_DESCRIPTION_CHARS = 300
 EMBED_FEATURE_KEYS = ("color", "primarymaterial", "material", "style", "shape")
 
 
+def size_token(size: str) -> str:
+    """How shoppers type a size, to the nearest foot: "8' x 10'" -> "8x10",
+    "7' 10\\" x 10'" -> "8x10"; round rugs and bed sizes are unchanged."""
+    lengths = re.findall(r"(\d+)'(?: (\d+(?:\.\d+)?)\")?", size)
+    if len(lengths) != 2:
+        return size
+    return "x".join(str(int(int(feet) + float(inches or 0) / 12 + 0.5)) for feet, inches in lengths)
+
+
 class ProductRecord(BaseModel):
     id: str
     title: str
@@ -22,6 +32,8 @@ class ProductRecord(BaseModel):
     product_class: str | None = None
     category_path: list[str] = []
     features: dict[str, str] = {}
+    sizes: list[str] = []  # purchasable sizes, e.g. "8' x 10'", "queen"
+    dimensions: dict[str, str] = {}  # overall dimensions in inches, e.g. {"width": "64.7"}
     rating: float | None = Field(default=None, ge=0.0, le=5.0)
     rating_count: int | None = Field(default=None, ge=0)
     review_count: int | None = Field(default=None, ge=0)

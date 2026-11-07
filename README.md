@@ -16,7 +16,7 @@ Most RAG tutorials wire a single dense vector search to an LLM and call it done.
 
 This system solves both by running dense and sparse retrieval in parallel and fusing results using Reciprocal Rank Fusion (RRF) — balancing semantic understanding with keyword precision.
 
-**Measured result:** on held-out queries from the human-labelled Wayfair WANDS benchmark (42,994 products), hybrid retrieval scores **nDCG@10 = 0.728 vs 0.676 for dense-only** (+0.052, 95% CI [+0.035, +0.069]). See [Evaluation Results](#evaluation-results).
+**Measured result:** on held-out queries from the human-labelled Wayfair WANDS benchmark (42,994 products), hybrid retrieval scores **nDCG@10 = 0.726 vs 0.675 for dense-only** (+0.051, 95% CI [+0.034, +0.067]). See [Evaluation Results](#evaluation-results).
 
 ### Dataset: Wayfair WANDS
 The catalog is [WANDS](https://github.com/wayfair/WANDS) (Wayfair ANnotation DataSet, MIT licence): **42,994 furniture and home products, 480 real search queries and 233,448 human relevance judgments** (Exact / Partial / Irrelevant). Having judgments written by someone other than the system's author is what makes the evaluation meaningful.
@@ -111,7 +111,7 @@ Where `k` is a smoothing constant and `r_m(d)` is the 1-based rank of document `
 
 Fusing ranks instead of scores avoids calibrating cosine similarity against BM25 scores, which live on different scales. `k` sets the trade-off between *agreement* and *top rank*: with a small `k` (Qdrant's default is 2) a document ranked 1st by one retriever ties with one ranked 4th by both; with a large `k` the document both retrievers agree on wins.
 
-**Tuning (dev split only).** A 4×3 grid over `k ∈ {10, 30, 60, 100}` and candidates per leg `∈ {20, 50, 100}` was scored on the dev queries; `k=30`, 100 candidates had the best nDCG@10. Nearly all of the gain came from the candidate count (20 → 50: about +0.015 nDCG@10 at every `k`); differences between `k` values were within noise (< 0.005). On the untouched test split, the tuned setting scores 0.728 vs 0.701 for the common default (`k=60`, 20 candidates).
+**Tuning (dev split only).** A 4×3 grid over `k ∈ {10, 30, 60, 100}` and candidates per leg `∈ {20, 50, 100}` was scored on the dev queries; `k=30`, 100 candidates had the best nDCG@10. Nearly all of the gain came from the candidate count (20 → 50: about +0.015 nDCG@10 at every `k`); differences between `k` values were within noise (< 0.005). On the untouched test split, the tuned setting scored 0.728 vs 0.701 for the common default (`k=60`, 20 candidates), both measured before the latest index rebuild.
 
 > **BM25 needs Qdrant's IDF modifier.** FastEmbed's `Qdrant/bm25` model stores only the saturated term-frequency part of BM25. The IDF part is computed by Qdrant from collection statistics, and only when the sparse index is created with `modifier=Modifier.IDF`. Queries are encoded with `query_embed` (weight 1.0 per token). Ingestion refuses to reuse a collection whose sparse index lacks the modifier.
 
@@ -136,6 +136,8 @@ Shoppers write constraints into the query: "grey area rug under $150", "desk lam
 - **Pre-filtering, not post-filtering.** The Qdrant filter is applied inside each prefetch leg, so dense and BM25 each return their best *matching* candidates before fusion. Filtering after fusion would leave gaps (see the benchmark below).
 - **Explicit filters override parsed ones** field by field, and the response reports `interpreted_query` and `applied_filters` so the UI can show what was searched. Filters are part of the cache key. The LLM is told which filters were applied, so it doesn't refuse with "I can't confirm the price".
 - Products without a rating never match a rating filter: an unknown rating isn't evidence of a good one.
+
+**Sizes are a preference, not a filter.** "grey area rug 8x10" searches for "grey area rug", then moves products sold in that size to the front of the query's 15 best matches. A hard filter would hide most suitable rugs, because only about 40% of rugs list a size. Catalog sizes rarely read the way shoppers write them, so they're rounded to the nearest foot: a 7' 10" × 10' 2" rug counts as an 8x10. Only room-scale pairs are read as sizes (both numbers at most 15 ft), and the response reports `preferred_size`.
 
 ### 6. CPU-Only Embedding (FastEmbed)
 FastEmbed runs ONNX-optimized models locally with zero GPU requirement:
@@ -253,7 +255,8 @@ Response: {
     "total_ms": 234.1
   },
   "interpreted_query": "mid-century modern coffee table",
-  "applied_filters": {...}
+  "applied_filters": {...},
+  "preferred_size": null    // e.g. "8x10" when the query names a room size
 }
 ```
 `/ask` accepts the same `filters` and `parse_filters` fields as `/search`.
@@ -275,13 +278,13 @@ The script runs the production `ProductSearchService` in-process (no HTTP, no ca
 
 | Mode | nDCG@10 | Recall@100 | MRR@10 | P@10 | judged@10 | Search p50 / p95 |
 |---|---|---|---|---|---|---|
-| Dense only | 0.676 [0.642, 0.710] | 0.629 [0.583, 0.669] | 0.657 [0.605, 0.708] | 0.451 [0.404, 0.500] | 0.79 | 15 / 33 ms |
-| BM25 only | 0.659 [0.622, 0.696] | 0.659 [0.612, 0.701] | 0.723 [0.672, 0.771] | 0.460 [0.414, 0.506] | 0.79 | 8 / 11 ms |
-| **Hybrid (RRF)** | **0.728 [0.695, 0.760]** | **0.675 [0.628, 0.715]** | **0.739 [0.689, 0.785]** | **0.492 [0.443, 0.539]** | 0.85 | 15 / 24 ms |
+| Dense only | 0.675 [0.641, 0.709] | 0.624 [0.578, 0.665] | 0.658 [0.606, 0.708] | 0.454 [0.406, 0.502] | 0.79 | 13 / 16 ms |
+| BM25 only | 0.659 [0.622, 0.696] | 0.659 [0.612, 0.701] | 0.723 [0.672, 0.771] | 0.460 [0.414, 0.506] | 0.79 | 9 / 12 ms |
+| **Hybrid (RRF)** | **0.726 [0.693, 0.758]** | **0.675 [0.629, 0.715]** | **0.740 [0.691, 0.786]** | **0.493 [0.444, 0.540]** | 0.85 | 14 / 19 ms |
 
-Paired difference vs dense: **hybrid nDCG@10 +0.052 [+0.036, +0.068]**, Recall@100 +0.046 [+0.024, +0.071], both significant. BM25 alone vs dense: nDCG@10 −0.017 [−0.045, +0.008] (not significant). For reference, hybrid with the untuned default (`k=60`, 20 candidates) scored nDCG@10 0.701 on test (measured before the tie-breaking fix below; results moved by at most ±0.002).
+Paired difference vs dense: **hybrid nDCG@10 +0.051 [+0.034, +0.067]**, Recall@100 +0.051 [+0.026, +0.076], both significant. BM25 alone vs dense: nDCG@10 −0.017 [−0.044, +0.009] (not significant). For reference, hybrid with the untuned default (`k=60`, 20 candidates) scored nDCG@10 0.701 on test (measured before the tie-breaking fix and the latest index rebuild).
 
-**Reproducibility.** RRF often produces exact score ties (a product ranked *r*-th by dense alone scores the same as one ranked *r*-th by BM25 alone), and Qdrant returns tied points in an order that varies between runs. That shifted nDCG@10 by up to ±0.002 between identical runs. Both fusion paths and the single-retriever baselines now break ties by product id (fetching a few extra results so a tie at the cut-off can't change the set). Two consecutive test runs now produce identical top-10s for every query in every mode. Latency columns vary with machine load and are indicative only.
+**Reproducibility.** RRF often produces exact score ties (a product ranked *r*-th by dense alone scores the same as one ranked *r*-th by BM25 alone), and Qdrant returns tied points in an order that varies between runs. That shifted nDCG@10 by up to ±0.002 between identical runs. Both fusion paths and the single-retriever baselines now break ties by product id (fetching a few extra results so a tie at the cut-off can't change the set). Two consecutive test runs now produce identical top-10s for every query in every mode. Rebuilding the index from scratch can still move scores by a few thousandths (hybrid went from 0.728 to 0.726), so differences that small aren't meaningful. Latency columns vary with machine load and are indicative only.
 
 **How the metrics are defined:**
 - **nDCG@10** (primary) uses graded gains: Exact = 2, Partial = 1.
@@ -301,37 +304,60 @@ WANDS queries never state a budget, so the benchmark adds one. For each test que
 
 | System (237 test queries) | nDCG@10 (budget-aware) | Over-budget results | Slots filled (of 10) |
 |---|---|---|---|
-| No parsing: search the raw text, no filter (previous behaviour) | 0.297 [0.268, 0.328] | 50.5% | 10.0 |
-| Post-filter: parse, search, then drop over-budget results | 0.388 [0.352, 0.423] | 0.0% | 4.9 |
-| **Pre-filter: parse, filter inside each prefetch (this system)** | **0.554 [0.506, 0.599]** | **0.0%** | **10.0** |
+| No parsing: search the raw text, no filter (previous behaviour) | 0.297 [0.268, 0.328] | 50.4% | 10.0 |
+| Post-filter: parse, search, then drop over-budget results | 0.391 [0.355, 0.426] | 0.0% | 5.0 |
+| **Pre-filter: parse, filter inside each prefetch (this system)** | **0.551 [0.503, 0.597]** | **0.0%** | **10.0** |
 
-Pre-filtering vs no parsing: **+0.257 nDCG@10** [+0.227, +0.288]; vs post-filtering: **+0.165** [+0.144, +0.189]. Without parsing, half of what's shown is over budget. Post-filtering never violates the budget but leaves half the page empty. Prices are synthetic, so this measures filter mechanics, not real-world price behaviour.
+Pre-filtering vs no parsing: **+0.254 nDCG@10** [+0.224, +0.284]; vs post-filtering: **+0.160** [+0.140, +0.184]. Without parsing, half of what's shown is over budget. Post-filtering never violates the budget but leaves half the page empty. Prices are synthetic, so this measures filter mechanics, not real-world price behaviour.
+
+### Room-size rug queries
+
+```bash
+python -m src.evaluation.size_eval
+```
+
+40 rug queries with a room size, top 5 results, 95% bootstrap CIs. WANDS has no size judgments, so this measures whether results list the size and still match the rest of the query, not human-judged relevance.
+
+| System | Results listing the size | Queries with at least one | Results mentioning the requested term | Results that are rugs |
+|---|---|---|---|---|
+| Size left in the search text | 15.0% [11.0%, 19.0%] | 65.0% [50.0%, 80.0%] | 99.0% [97.5%, 100%] | 95.5% [91.5%, 99.0%] |
+| **Size as a preference (this system)** | **53.5% [44.0%, 63.5%]** | **97.5% [92.5%, 100%]** | **98.5% [96.5%, 100%]** | **96.0% [91.5%, 99.0%]** |
+
+Results listing the size rose by 38.5 points [+30.0, +47.0], and results mentioning the requested term changed by −0.5 points [−2.0, +1.0], which isn't significant. The re-ordering depth of 15 was chosen on these same 40 queries, so the numbers are somewhat optimistic.
+
+**A design that was rejected.** Adding sizes to the search text first looked like a clear win: results listing the size rose from 15.5% to 92.5%, with nDCG@10 down only 0.002, which passed the rule set before the experiment. A further check showed the cost that metric hid: results mentioning the requested term fell from 98.5% to 82.5%, so "grey area rug 8x10" returned espresso and green rugs. Re-ordering all 100 candidates failed in a similar way (−8.5 points), which led to the depth of 15.
 
 ### Answer quality
 
 ```bash
 python -m src.evaluation.generation_eval
-python -m src.evaluation.generation_eval --calibrate src/evaluation/judge_labels.csv
+python -m src.evaluation.generation_eval --calibrate src/evaluation/judge_labels.csv --report <labelled report>.json
 ```
 
-100 queries go through the production path (parsing, hybrid search, context, generator): 50 WANDS dev queries, 20 more with a budget appended, and 30 hand-written queries for products a home-goods catalog doesn't stock, each checked against the catalog's top results. An LLM judge from a different model family (`qwen/qwen3.8-27b`) audits each answer against its context, and rule-based checks cover refusals, prices and wording. 95% bootstrap CIs.
+110 queries go through the production path (parsing, hybrid search, context, generator): 50 WANDS dev queries, 20 more with a budget appended, 30 hand-written queries for products a home-goods catalog doesn't stock (each checked against the catalog's top results), and 10 rug queries with a room size. An LLM judge from a different model family (`qwen/qwen3.8-27b`) audits each answer against its context, and rule-based checks cover refusals, prices and wording. 95% bootstrap CIs.
 
 | Metric | Result |
 |---|---|
-| Correct refusal, out-of-catalog | 100% (30/30) |
-| Refusal on in-catalog queries | 15.7% [7.1%, 24.3%] (11/70) |
-| ...when an Exact product was among the 5 retrieved | 3.8% [0.0%, 9.4%] (2/53) |
-| Claims the judge found supported | 99.1% [98.5%, 99.7%] (1,348 of 1,361) |
-| Answers with every claim supported (judge) | 84.7% [74.6%, 93.2%]; see calibration below |
-| Relevance (judge, 1-5) | 4.90 [4.80, 4.98] |
-| Answers quoting a price not in the context | 0% (0/59) |
-| Answers claiming to cover the whole catalog | 1.7% (1/59) |
+| Correct refusal, out-of-catalog | 96.7% [90.0%, 100%] (29/30) |
+| Refusal on in-catalog queries | 14.3% [7.1%, 22.9%] (10/70) |
+| ...when an Exact product was among the 5 retrieved | 3.7% [0.0%, 9.3%] (2/54) |
+| Refusal on rug queries with a room size | 0% (0/10) |
+| Claims the judge found supported | 99.1% [98.5%, 99.7%] (1,679 of 1,694) |
+| Answers with every claim supported (judge) | 87.3% [78.9%, 94.4%]; see calibration below |
+| Relevance (judge, 1-5) | 4.86 [4.77, 4.93] |
+| Answers quoting a price not in the context | 0% (0/71) |
+| Answers claiming to cover the whole catalog | 1.4% (1/71) |
 
-Nine of the 11 in-catalog refusals had no Exact product in the context, so most trace back to retrieval, or to a requested detail such as a brand or finish that wasn't there. Refusing is defensible in those cases.
+**Softening the refusal rule had a mixed effect.** Sizes were added to the model's context, and the rule changed: it now refuses only when no product is the kind of item requested, and may show a product whose requested detail isn't listed. Compared with the previous version on the same 100 queries:
 
-**Prompt iteration.** The first version told shoppers "these are the only products in our catalog" in 25% of answers (15/59), although the model sees 5 products. Two prompt revisions brought this to 1.7%, a paired change of −22 points [−36, −10], with no significant change in supported claims (−0.2 points [−1.0, +0.8]). Answers grew about 20% longer. The same 100 queries were used to develop the prompt and report these results, and the WANDS queries all come from the dev split, so treat them as development numbers rather than a held-out estimate.
+- Room-size queries now get answers. "grey area rug 8x10" was refused before.
+- General in-catalog refusals barely moved, from 11 to 10 of 70, with one answer changing.
+- Out-of-catalog refusals slipped from 30/30 to 29/30: "men's running shoes size 10" now returns shoe racks, with a claim that they fit that shoe. The judge flagged it.
+- Answers with every claim supported went from 50 to 52 of the 59 queries answered in both runs (4 got worse, 6 got better), so there's no sign of more unsupported claims.
 
-**Judge calibration: the judge is lenient.** A second AI reviewer (Claude Opus 5.5, not a human) labelled 30 answers against their context, with the sheet in `src/evaluation/judge_labels.csv`:
+**Prompt iteration.** The first version told shoppers "these are the only products in our catalog" in 25% of answers (15/59), although the model sees 5 products. Two prompt revisions brought this to 1.7%, a paired change of −22 points [−36, −10], with no significant change in supported claims (−0.2 points [−1.0, +0.8]). Answers grew about 20% longer. The same queries were used to develop the prompt and report these results, and the WANDS queries all come from the dev split, so treat them as development numbers rather than a held-out estimate.
+
+**Judge calibration: the judge is lenient.** A second AI reviewer (Claude Opus 5.5, not a human) labelled 30 answers against their context, with the sheet in `src/evaluation/judge_labels.csv`. These answers came from the previous 100-query run, before the sizes change:
 
 | | |
 |---|---|
@@ -340,9 +366,9 @@ Nine of the 11 in-catalog refusals had no Exact product in the context, so most 
 | Relevance | 87% exact, 100% within 1 point |
 | Disagreements on support | 7, all where the reviewer found a problem the judge passed |
 
-Read 84.7% as an upper estimate. The misses are mostly small embellishments ("classic design", a product name read as a material). Limits: the reviewer is an AI, it had already seen the judge's flagged claims for this run, so agreement may be inflated, it marked an answer down for a single unsupported word, and 30 answers is a small sample. A human review is still needed before calling the judge human-validated.
+Read the 87.3% above as an upper estimate. The misses are mostly small embellishments ("classic design", a product name read as a material). Limits: the reviewer is an AI, it had already seen the judge's flagged claims for this run, so agreement may be inflated, it marked an answer down for a single unsupported word, and 30 answers is a small sample. A human review is still needed before calling the judge human-validated.
 
-Every LLM call is cached by its full request in `.cache/llm_calls.sqlite`, so an unchanged re-run is free. A cold run takes about 1.5 hours on Groq's free tier.
+Every LLM call is cached by its full request in `.cache/llm_calls.sqlite`, so an unchanged re-run is free. A cold run takes about 2 hours on Groq's free tier, and longer when its rate limits force long waits.
 
 ### Cross-encoder reranking: tested, not enabled
 
@@ -470,6 +496,7 @@ ecommerce-rag-engine/
 │       ├── retrieval_eval.py # WANDS benchmark: dense vs BM25 vs hybrid
 
 │       ├── filter_eval.py    # Price-constrained benchmark: no parsing vs post- vs pre-filter
+│       ├── size_eval.py      # Room-size benchmark: size as search text vs preference
 │       ├── generation_eval.py # Answer quality: refusals, faithfulness, relevance, calibration
 │       ├── judge.py          # LLM judge, rule-based answer checks, cached LLM calls
 │       ├── out_of_catalog.json # Queries the catalog can't answer
@@ -499,8 +526,10 @@ ecommerce-rag-engine/
 - **Synthetic prices**: WANDS has no prices; the ones shown are generated and must not be read as real.
 - **Answer quality has no human validation yet**: the judge was calibrated against an AI reviewer that wasn't fully blind, on 30 answers. It also misses subtle embellishments, so its faithfulness scores are upper estimates.
 - **No reranker**: cross-encoder reranking was evaluated and left off (gain not significant on dev, about +0.7–1.0 s per query on CPU); see above.
-- **Over-strict refusals**: the prompt tells the model to refuse when the context lacks a requested detail. For example, "grey area rug 8x10" retrieves grey rugs, but size isn't among the attributes passed to the LLM, so it refuses.
-- **Constraint parsing covers price and rating only**, in English patterns. Categories aren't inferred from text (by design), and other attributes ("8x10", "walnut") are left to ranking rather than enforced as filters.
+- **Answers leave out near-size rugs**: on the 10 room-size queries, the model named about 22 of the 31 retrieved products marked as matching (a rough title match on the answers). All 9 it missed have near sizes, such as 7' 10" × 10' 2" for an 8x10, so "grey area rug 8x10" shows one rug when three fit.
+- **One out-of-catalog query is answered**: "men's running shoes size 10" returns shoe racks instead of a refusal.
+- **Only about 40% of rugs list a size**, so size is a ranking preference rather than a guarantee.
+- **Constraint parsing covers price, rating and rug room sizes only**, in English patterns. Categories aren't inferred from text (by design), and other attributes ("walnut") are left to ranking rather than enforced as filters.
 - **Incomplete judgments**: about 20% of top-10 results have no WANDS judgment and count as irrelevant, so absolute scores are pessimistic.
 - **Embedding model**: `bge-small-en-v1.5` is optimized for speed. `bge-large-en-v1.5` or `text-embedding-3-large` would improve semantic retrieval quality at higher compute cost.
 - **Sparse model**: BM25 is statistical. Upgrading to SPLADE neural sparse model would improve keyword expansion for ambiguous queries.
