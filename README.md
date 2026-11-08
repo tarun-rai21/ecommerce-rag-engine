@@ -416,6 +416,29 @@ The server spends about 2 ms on a hit; most of the ~50 ms floor is Docker Deskto
 
 **A failure the load test found.** In the first run at 32 users, one Redis lookup overran its 250 ms budget because the event loop was busy. The circuit breaker treated that as Redis being down and skipped the cache for 30 s, so every request went to search and the LLM, and Groq rejected 53 calls for rate limits. Shoppers saw "please try again later", p95 reached 9.7 s, and throughput fell to 21 requests/s. The breaker now opens at once on a connection error, as before, but only after 5 timeouts in a row; any success resets the count. In the rerun, 32 users got 79 requests/s, p95 1.5 s and no errors. No lookup timed out in the rerun, so the new rule wasn't exercised there; unit tests cover it.
 
+### Cost per query
+
+```bash
+python -m benchmarks.cost      # from the token usage recorded by the load test
+```
+
+Only an uncached `/ask` costs money: embedding and search run on our own CPU, and a cache hit makes no LLM call. Prices are Groq's on-demand rates for `openai/gpt-oss-20b`, read on 2026-11-09 from the [models page](https://console.groq.com/docs/models): $0.075 per 1M input tokens and $0.30 per 1M output tokens. Token counts come from the load test's 20 uncached answers, and completion tokens include the model's reasoning.
+
+| | Mean | Range |
+|---|---|---|
+| Prompt tokens per answer | 1,031 | 855–1,174 |
+| Completion tokens per answer | 176 | 29–380 |
+| Cost per LLM answer | $0.00013 | $0.00008–$0.00020 |
+
+| Cache hit rate | Cost per 1,000 questions |
+|---|---|
+| 0% | $0.130 [$0.114, $0.146] |
+| 25% | $0.098 [$0.086, $0.110] |
+| 50% | $0.065 [$0.057, $0.073] |
+| 75% | $0.033 [$0.029, $0.037] |
+
+The hit rate depends on real traffic, which this project doesn't have, so cost is shown for several rates. Input is 59% of the cost. The context is capped for this reason: product descriptions are cut to 400 characters. Two discounts would lower these figures but aren't counted: Groq bills cached prompt tokens at half price, which could apply to the shared system prompt, and its batch API is half price but suits offline work only. The evaluation judge (`qwen/qwen3.8-27b`) costs $0.80 per 1M input and $4.00 per 1M output tokens, about 11–13 times the generator per token, but it runs only during evaluation.
+
 ### Cross-encoder reranking: tested, not enabled
 
 A cross-encoder reranker (`src/backend/services/rerank.py`) can re-score the top 20 hybrid results by reading the query and product text together. It runs under a time budget and falls back to the RRF order on timeout or error. It's **off by default** (`RERANK_ENABLED=false`) because, on the dev split, no CPU-feasible model cleared the bar set before the experiment: a gain over plain hybrid that is statistically significant *and* at least +0.010 nDCG@10.
@@ -553,7 +576,8 @@ ecommerce-rag-engine/
 │       └── eval.py           # HTTP smoke evaluation + gate
 
 ├── benchmarks/
-│   └── load_test.py          # Closed-loop load test: /search, /ask misses and hits
+│   ├── load_test.py          # Closed-loop load test: /search, /ask misses and hits
+│   └── cost.py               # Cost per 1,000 questions from recorded token usage
 ├── tests/                    # pytest: ingestion, search, API, cache, metrics, LLM
 
 ├── Dockerfile.backend
