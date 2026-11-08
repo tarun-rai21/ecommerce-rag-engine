@@ -196,6 +196,13 @@ docker-compose up --build -d
 
 This spins up 4 containers: Qdrant (v1.18.2), Redis (7.4.9), FastAPI backend, Streamlit frontend. Qdrant and Redis data live in named Docker volumes (`qdrant_data`, `redis_data`).
 
+**Images.** Each service installs only its own dependencies (`requirements-backend.txt`, `requirements-frontend.txt`; `requirements.txt` includes both for local work). Both images run as a non-root user and use multi-stage builds with no compiler. The backend image bakes in both embedding models (65 MB) and then sets `HF_HUB_OFFLINE=1`, so a container starts without downloading anything and works on a host with no access to Hugging Face. Locally, the backend turns healthy about 13 s after starting, against roughly 30–50 s when it downloaded the models at startup.
+
+| Image | Before | After |
+|---|---|---|
+| Backend (models included) | 1.02 GB, plus a 65 MB download at every start | 674 MB |
+| Frontend | 1.02 GB | 806 MB, mostly Streamlit's own pandas and pyarrow dependencies |
+
 Each container has a memory limit: Qdrant and the backend 1 GB, the frontend 512 MB, Redis 256 MB. Redis evicts the least-recently-used answers at 200 MB instead of being killed. In use, the stack takes about 0.6 GB. On Windows, Docker Desktop's VM takes up to half of RAM by default; a `[wsl2] memory=4GB` line in `%UserProfile%\.wslconfig` caps it.
 
 ### 4. Download and ingest product data

@@ -1,0 +1,4 @@
+# Streamlit UI. Streamlit itself requires pandas and pyarrow.
+pandas==3.0.3
+requests==2.34.2
+streamlit==1.58.0

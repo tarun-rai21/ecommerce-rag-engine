@@ -41,7 +41,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.FASTEMBED_CACHE_PATH }}
-          key: fastembed-${{ hashFiles('requirements.txt') }}
+          key: fastembed-${{ hashFiles('requirements-backend.txt') }}
       - name: Download WANDS queries (for the parser test over all 480 real queries)
         run: |
           mkdir -p data/wands

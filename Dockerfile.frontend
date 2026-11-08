@@ -1,24 +1,25 @@
-# ── Stage 1: Builder ──────────────────────────────────────
+# ── Stage 1: install dependencies ─────────────────────────
 FROM python:3.11-slim AS builder
 
+ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
+COPY requirements-frontend.txt .
+RUN pip install --prefix=/install -r requirements-frontend.txt
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --prefix=/install --no-cache-dir -r requirements.txt
-
-# ── Stage 2: Runtime ──────────────────────────────────────
+# ── Stage 2: runtime ──────────────────────────────────────
 FROM python:3.11-slim AS runtime
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+RUN useradd --create-home --uid 10001 app
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
 COPY src/frontend/ ./src/frontend/
 
+USER app
 EXPOSE 8501
 
 CMD ["streamlit", "run", "src/frontend/app.py", \
