@@ -194,6 +194,8 @@ docker-compose up --build -d
 
 This spins up 4 containers: Qdrant (v1.18.2), Redis (7.4.9), FastAPI backend, Streamlit frontend. Qdrant and Redis data live in named Docker volumes (`qdrant_data`, `redis_data`).
 
+Each container has a memory limit: Qdrant and the backend 1 GB, the frontend 512 MB, Redis 256 MB. Redis evicts the least-recently-used answers at 200 MB instead of being killed. In use, the stack takes about 0.6 GB. On Windows, Docker Desktop's VM takes up to half of RAM by default; a `[wsl2] memory=4GB` line in `%UserProfile%\.wslconfig` caps it.
+
 ### 4. Download and ingest product data
 ```bash
 pip install -r requirements.txt
@@ -332,7 +334,12 @@ Results listing the size rose by 38.5 points [+30.0, +47.0], and results mention
 ```bash
 python -m src.evaluation.generation_eval
 python -m src.evaluation.generation_eval --calibrate src/evaluation/judge_labels.csv --report <labelled report>.json
+
+# While trying a change: run only the affected groups and compare with the last full run
+python -m src.evaluation.generation_eval --segments sized ooc --compare reports/<full run>.json
 ```
+
+`--segments` (`plain`, `constrained`, `ooc`, `sized`) runs part of the sample. The report is saved as `generation-subset_*`, so it's never mistaken for a full run. `--compare` prints paired changes on the shared items: refusals that flipped, and answers that gained or lost full support, with a CI. A full run is still needed before reporting numbers.
 
 110 queries go through the production path (parsing, hybrid search, context, generator): 50 WANDS dev queries, 20 more with a budget appended, 30 hand-written queries for products a home-goods catalog doesn't stock (each checked against the catalog's top results), and 10 rug queries with a room size. An LLM judge from a different model family (`qwen/qwen3.8-27b`) audits each answer against its context, and rule-based checks cover refusals, prices and wording. 95% bootstrap CIs.
 

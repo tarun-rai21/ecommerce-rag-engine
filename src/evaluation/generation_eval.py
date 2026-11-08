@@ -55,7 +55,7 @@ from src.evaluation.judge import (
     ungrounded_prices,
 )
 from src.evaluation.retrieval_eval import MemoEmbedder, _git_sha
-from src.evaluation.stats import bootstrap_mean
+from src.evaluation.stats import bootstrap_mean, paired_difference
 from src.ingestion.embedder import ProductEmbedder
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -127,12 +127,16 @@ async def evaluate_item(item: dict, service: ProductSearchService, llm: CachedLL
     return row
 
 
-async def run_all(collection: str) -> list[dict]:
+SEGMENTS = ("plain", "constrained", "ooc", "sized")
+
+
+async def run_all(collection: str, segments: tuple[str, ...] = SEGMENTS) -> list[dict]:
     service = ProductSearchService(embedder=MemoEmbedder(ProductEmbedder()), collection_name=collection)
     llm = CachedLLM(Groq(api_key=settings.GROQ_API_KEY, max_retries=0, timeout=60))
     rows = []
     try:
-        items = await build_sample(service)
+        # The full sample is always built, so item ids and budgets match full runs.
+        items = [it for it in await build_sample(service) if it["segment"] in segments]
         for i, item in enumerate(items, start=1):
             rows.append(await evaluate_item(item, service, llm))
             if i % 10 == 0:
@@ -198,8 +202,9 @@ def to_markdown(s: dict) -> str:
         return "n/a" if e["mean"] is None else f"{e['mean']:.3f} [{e['low']:.3f}, {e['high']:.3f}] (n={e['n']})"
 
     r, f = s["refusal"], s["faithfulness"]
+    counts = ", ".join(f"{v['n']} {k}" for k, v in r["by_segment"].items() if v["n"])
     lines = [
-        f"Items: {s['n_items']} (50 plain + 20 budget-constrained WANDS dev queries, 30 out-of-catalog, 10 rug queries with a size). "
+        f"Items: {s['n_items']} ({counts}; plain and constrained are WANDS dev queries, constrained with a budget appended). "
         f"Generator `{settings.LLM_MODEL}`, judge `{JUDGE_MODEL}`.",
         "",
         "| Metric | Value [95% CI] |",
@@ -301,6 +306,31 @@ def calibrate(rows: list[dict], path: Path) -> str:
     return "\n".join(lines)
 
 
+# ── Comparison ────────────────────────────────────────────
+def compare(new: list[dict], old: list[dict]) -> str:
+    """Paired changes on the items both runs share: refusals that flipped and answers
+    that gained or lost full support. Use it to judge a prompt or context change."""
+    before = {r["item_id"]: r for r in old}
+    shared = [(before[r["item_id"]], r) for r in new if r["item_id"] in before]
+    if not shared:
+        return "No items in common with the comparison report."
+    flips = [f"  - [{n['segment']}] {n['query']}: {'refused' if o['refused'] else 'answered'} -> "
+             f"{'refused' if n['refused'] else 'answered'}" for o, n in shared if o["refused"] != n["refused"]]
+    both = [(o, n) for o, n in shared if o["fully_faithful"] is not None and n["fully_faithful"] is not None]
+    worse = [n["query"] for o, n in both if o["fully_faithful"] and not n["fully_faithful"]]
+    better = [n["query"] for o, n in both if n["fully_faithful"] and not o["fully_faithful"]]
+    lines = [f"Compared with the earlier report on {len(shared)} shared items:",
+             f"- Refusals: {sum(o['refused'] for o, _ in shared)} -> {sum(n['refused'] for _, n in shared)}"
+             + (", flipped:\n" + "\n".join(flips) if flips else ", none flipped")]
+    if both:
+        diff = paired_difference([float(n["fully_faithful"]) for _, n in both], [float(o["fully_faithful"]) for o, _ in both])
+        lines.append(f"- Fully supported answers, on the {len(both)} answered in both: "
+                     f"{sum(o['fully_faithful'] for o, _ in both)} -> {sum(n['fully_faithful'] for _, n in both)} "
+                     f"({diff.mean:+.1%} [{diff.low:+.1%}, {diff.high:+.1%}])")
+        lines += [f"  - worse: {q}" for q in worse] + [f"  - better: {q}" for q in better]
+    return "\n".join(lines)
+
+
 # ── CLI ───────────────────────────────────────────────────
 async def check_ooc(collection: str) -> None:
     service = ProductSearchService(embedder=ProductEmbedder(), collection_name=collection)
@@ -318,7 +348,11 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("--check-ooc", action="store_true", help="print top results for the out-of-catalog queries")
     p.add_argument("--export-labels", type=Path, help="write a blind labelling sheet to this CSV")
     p.add_argument("--calibrate", type=Path, help="compare judge verdicts with a filled-in label sheet")
-    p.add_argument("--report", type=Path, help="report JSON for --export-labels / --calibrate (default: latest)")
+    p.add_argument("--report", type=Path, help="report JSON for --export-labels / --calibrate (default: latest full run)")
+    p.add_argument("--segments", nargs="+", choices=SEGMENTS, default=list(SEGMENTS),
+                   help="run only these question groups, e.g. while trying a prompt change; "
+                        "the report is saved as generation-subset_* and never used as the default --report")
+    p.add_argument("--compare", type=Path, help="after the run, print paired changes against this earlier report")
     args = p.parse_args(argv)
 
     if args.check_ooc:
@@ -331,13 +365,17 @@ def main(argv: list[str] | None = None) -> None:
     if args.calibrate:
         print("\n" + calibrate(load_report(args.report), args.calibrate) + "\n")
         return
-    rows = asyncio.run(run_all(args.collection))
+    segments = tuple(s for s in SEGMENTS if s in args.segments)
+    rows = asyncio.run(run_all(args.collection, segments))
     summary = summarize(rows)
     markdown = to_markdown(summary)
+    if args.compare:
+        markdown += "\n\n" + compare(rows, load_report(args.compare))
     print("\n" + markdown + "\n")
 
     REPORTS_DIR.mkdir(exist_ok=True)
-    stem = f"generation_{_git_sha()}_{time.strftime('%Y%m%d-%H%M%S')}"
+    kind = "generation" if segments == SEGMENTS else "generation-subset"
+    stem = f"{kind}_{_git_sha()}_{time.strftime('%Y%m%d-%H%M%S')}"
     (REPORTS_DIR / f"{stem}.json").write_text(json.dumps({"summary": summary, "items": rows}, indent=2), encoding="utf-8")
     (REPORTS_DIR / f"{stem}.md").write_text(markdown + "\n", encoding="utf-8")
     logger.info(f"Reports written to reports/{stem}.json and .md")

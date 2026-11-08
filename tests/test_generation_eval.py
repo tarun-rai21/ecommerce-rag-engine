@@ -7,7 +7,7 @@ import pytest
 
 from src.backend.services.llm import REFUSAL_MESSAGE, build_messages, clean_output
 from src.backend.api.v1.endpoints import build_context
-from src.evaluation.generation_eval import calibrate, cohen_kappa, export_labels, spearman, summarize
+from src.evaluation.generation_eval import compare, calibrate, cohen_kappa, export_labels, spearman, summarize
 from src.evaluation.judge import (
     CachedLLM, dollar_amounts, is_refusal, mentions_context, overclaims_catalog, parse_judgment, ungrounded_prices,
 )
@@ -74,6 +74,21 @@ def test_clean_output_removes_whole_catalog_claims():
     assert clean_output(table) == table
     assert clean_output(REFUSAL_MESSAGE) == REFUSAL_MESSAGE
     assert clean_output("These are the only ones.") == "These are the only ones."
+
+
+def _row(item_id, refused, ff, segment="plain"):
+    return {"item_id": item_id, "segment": segment, "query": item_id, "refused": refused, "fully_faithful": ff}
+
+
+def test_compare_reports_flips_and_paired_support():
+    old = [_row("a", False, True), _row("b", False, False), _row("c", True, None, "ooc"), _row("gone", False, True)]
+    new = [_row("a", False, False), _row("b", False, True), _row("c", False, True, "ooc"), _row("extra", False, True)]
+    out = compare(new, old)
+    assert "on 3 shared items" in out
+    assert "Refusals: 1 -> 0" in out and "[ooc] c: refused -> answered" in out
+    assert "on the 2 answered in both: 1 -> 1" in out
+    assert "worse: a" in out and "better: b" in out
+    assert compare([_row("x", False, True)], old) == "No items in common with the comparison report."
 
 
 def test_dollar_amounts():

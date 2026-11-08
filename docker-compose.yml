@@ -7,6 +7,7 @@ services:
       - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
+    mem_limit: 1g  # ~250 MB in use with the 43k-product WANDS collection
     restart: unless-stopped
     networks:
       - ecommerce-net
@@ -18,6 +19,9 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
+    # Evict least-recently-used answers at the cap instead of being killed for memory.
+    command: redis-server --maxmemory 200mb --maxmemory-policy allkeys-lru
+    mem_limit: 256m
     restart: unless-stopped
     networks:
       - ecommerce-net
@@ -40,6 +44,7 @@ services:
     depends_on:
       - qdrant
       - redis
+    mem_limit: 1g  # ~310 MB in use: both embedding models are loaded at startup
     restart: unless-stopped
     networks:
       - ecommerce-net
@@ -55,6 +60,7 @@ services:
       - BACKEND_URL=http://backend:8000
     depends_on:
       - backend
+    mem_limit: 512m
     restart: unless-stopped
     networks:
       - ecommerce-net
