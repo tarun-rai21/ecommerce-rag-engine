@@ -89,6 +89,13 @@ class CacheService:
         self._timeout_streak = 0
         logger.warning(f"Cache {op} failed ({error!r}); bypassing cache for {self.cooldown:.0f}s.")
 
+    async def ping(self) -> bool:
+        """Readiness probe. Doesn't touch the circuit breaker: a probe isn't traffic."""
+        try:
+            return bool(await asyncio.wait_for(self.client.ping(), timeout=self.op_timeout))
+        except Exception:
+            return False
+
     async def get(self, key: str) -> str | None:
         _, value = await self._run("GET", lambda: self.client.get(key))
         return value

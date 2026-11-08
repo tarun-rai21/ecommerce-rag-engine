@@ -1,12 +1,24 @@
+import unicodedata
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.backend.services.query_parser import SearchFilters
 
 
 class SearchQueryRequest(BaseModel):
     q: str = Field(..., min_length=1, max_length=200)
+
+    @field_validator("q", mode="before")
+    @classmethod
+    def _strip_control_characters(cls, v):
+        # Control and format characters (null bytes, zero-width spaces, bidi overrides) carry
+        # no meaning in a product search but can hide text from people reading logs or
+        # prompts. Each becomes a space; the length check then applies to what remains.
+        if not isinstance(v, str):
+            return v
+        cleaned = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf") else ch for ch in v)
+        return " ".join(cleaned.split())
     limit: int = Field(default=5, ge=1, le=20)
     # Explicit facet filters (e.g. from UI controls). They override constraints
     # parsed from the query text field by field.

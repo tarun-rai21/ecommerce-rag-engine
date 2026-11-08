@@ -42,10 +42,20 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-20b}
       - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-300}
+      - API_KEYS=${API_KEYS:-}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-0}
+      - ASK_RATE_LIMIT_PER_MINUTE=${ASK_RATE_LIMIT_PER_MINUTE:-0}
     depends_on:
       - qdrant
       - redis
     mem_limit: 1g  # ~310 MB in use: both embedding models are loaded at startup
+    healthcheck:
+      # /readyz: Qdrant reachable and the collection has points. The image has no curl.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s  # model loading (and the first download) happens at startup
     restart: unless-stopped
     networks:
       - ecommerce-net
@@ -59,8 +69,10 @@ services:
       - "8501:8501"
     environment:
       - BACKEND_URL=http://backend:8000
+      - API_KEY=${FRONTEND_API_KEY:-}
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     mem_limit: 512m
     restart: unless-stopped
     networks:

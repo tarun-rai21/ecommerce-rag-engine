@@ -86,6 +86,7 @@ class ProductSearchService:
             host=settings.QDRANT_HOST,
             grpc_port=settings.QDRANT_GRPC_PORT,
             prefer_grpc=True,
+            timeout=settings.QDRANT_TIMEOUT_SECONDS,
         )
         self.embedder = embedder or ProductEmbedder()
         self.collection_name = collection_name or settings.COLLECTION_NAME
@@ -102,6 +103,11 @@ class ProductSearchService:
 
     async def close(self) -> None:
         await self.client.close()
+
+    async def ready(self) -> int:
+        """Points in the collection; raises if Qdrant or the collection is unreachable."""
+        info = await asyncio.wait_for(self.client.get_collection(self.collection_name), timeout=2.0)
+        return info.points_count or 0
 
     # ── Vector Generation ─────────────────────────────────
     async def _vectorize_query(self, query: str) -> tuple[list[float], dict]:

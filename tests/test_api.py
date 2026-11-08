@@ -1,69 +1,9 @@
 """/search and /ask behaviour with in-process fakes (no Qdrant, Redis or Groq)."""
 import pytest
-from fastapi.testclient import TestClient
-from redis.exceptions import ConnectionError as RedisConnectionError
 
-from src.backend.main import app
 from src.backend.services.cache import CacheService
-from src.backend.services.llm import UNAVAILABLE_MESSAGE, LLMResult
-
-
-class FakeSearch:
-    def __init__(self, n_results: int = 20):
-        self.limits: list[int] = []
-        self.calls: list[dict] = []
-        self.n_results = n_results
-
-    async def search(self, query, limit=5, mode=None, filters=None, prefer_size=None):
-        self.limits.append(limit)
-        self.calls.append({"query": query, "filters": filters, "prefer_size": prefer_size})
-        return [
-            {"id": str(100 + i), "score": 1 / (60 + i + 1), "title": f"P{i}",
-             "description": "d", "price": 9.99, "category": "c"}
-            for i in range(min(limit, self.n_results))
-        ]
-
-    async def facet_counts(self, key="category", limit=100):
-        return [{"value": "Furniture", "count": 3}, {"value": "Rugs", "count": 1}][:limit]
-
-
-class FakeRedis:
-    def __init__(self, fail: bool = False):
-        self.store, self.fail = {}, fail
-
-    async def get(self, k):
-        if self.fail:
-            raise RedisConnectionError("down")
-        return self.store.get(k)
-
-    async def set(self, k, v, ex=None):
-        if self.fail:
-            raise RedisConnectionError("down")
-        self.store[k] = v
-
-    async def aclose(self):
-        pass
-
-
-class FakeLLM:
-    def __init__(self, ok: bool = True):
-        self.ok, self.calls, self.contexts = ok, 0, []
-
-    async def generate_answer(self, query, context):
-        self.calls += 1
-        self.contexts.append(context)
-        return LLMResult("answer", True, 900, 150) if self.ok else LLMResult(UNAVAILABLE_MESSAGE, False)
-
-
-@pytest.fixture
-def make_client():
-    def _make(search=None, redis=None, llm=None):
-        app.state.search_service = search or FakeSearch()
-        app.state.cache_service = CacheService(client=redis or FakeRedis())
-        app.state.llm_service = llm or FakeLLM()
-        # Not used as a context manager, so the lifespan (real services) doesn't run.
-        return TestClient(app, raise_server_exceptions=False)
-    return _make
+from src.backend.services.llm import UNAVAILABLE_MESSAGE
+from tests.fakes import FakeLLM, FakeRedis, FakeSearch
 
 
 def test_cache_hit_returns_same_products(make_client):

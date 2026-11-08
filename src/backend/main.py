@@ -1,10 +1,13 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from config.settings import settings
-from src.backend.api.middleware import RequestTimingMiddleware
+from src.backend.api.errors import install_error_handlers
+from src.backend.api.health import router as health_router
+from src.backend.api.middleware import RequestContextMiddleware
 from src.backend.api.v1.router import router as v1_router
 from src.backend.services.cache import CacheService
 from src.backend.services.llm import LLMService
@@ -15,6 +18,9 @@ from src.backend.services.search import ProductSearchService
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting up — connecting to Qdrant and Redis.")
+    if not settings.api_keys:
+        logger.warning("API_KEYS is empty: /api/v1 accepts requests without a key. "
+                       "Fine for local development, not for a public deployment.")
     reranker = (
         RerankerService(
             settings.RERANK_MODEL,
@@ -35,7 +41,20 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="E-Commerce Search Engine",
     lifespan=lifespan,
+    docs_url="/docs" if settings.DOCS_ENABLED else None,
+    redoc_url="/redoc" if settings.DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if settings.DOCS_ENABLED else None,
 )
 
-app.add_middleware(RequestTimingMiddleware)
+install_error_handlers(app)
+app.add_middleware(RequestContextMiddleware)
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "X-API-Key", "X-Request-ID"],
+        expose_headers=["X-Request-ID", "Retry-After"],
+    )
+app.include_router(health_router)
 app.include_router(v1_router, prefix="/api/v1")

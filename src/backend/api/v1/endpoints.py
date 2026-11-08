@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, Query, Request
 from loguru import logger
 from pydantic import ValidationError
 
+from src.backend.api.errors import ApiError
+from src.backend.api.security import rate_limit
 from src.backend.models.api_schemas import (
     AskResponseEnvelope,
     FacetResponse,
@@ -27,6 +29,21 @@ router = APIRouter()
 
 def _ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 2)
+
+
+SEARCH_UNAVAILABLE = "Product search is temporarily unavailable. Please try again shortly."
+
+
+async def _search_or_503(call):
+    """Run a Qdrant-backed call; a failure there becomes a 503 rather than a 500,
+    since nothing can be answered without the catalog."""
+    try:
+        return await call
+    except ValueError:
+        raise  # a programming error (e.g. bad mode), not an outage
+    except Exception as e:
+        logger.opt(exception=e).error("Search backend failed")
+        raise ApiError(503, "search_unavailable", SEARCH_UNAVAILABLE) from e
 
 
 # ── Dependency Injection ──────────────────────────────────
@@ -118,16 +135,17 @@ def build_context(results: list[dict], filters: SearchFilters | None = None, pre
 
 
 # ── /search Endpoint ──────────────────────────────────────
-@router.post("/search", response_model=SearchResponseEnvelope)
+@router.post("/search", response_model=SearchResponseEnvelope,
+             dependencies=[Depends(rate_limit("search", "RATE_LIMIT_PER_MINUTE"))])
 async def search_products(
     request: SearchQueryRequest,
     service: ProductSearchService = Depends(get_search_service),
 ) -> SearchResponseEnvelope:
     start = time.perf_counter()
     resolved = resolve_query(request)
-    raw_results = await service.search(
+    raw_results = await _search_or_503(service.search(
         query=resolved.text, limit=request.limit, filters=resolved.filters, prefer_size=resolved.size,
-    )
+    ))
 
     results = [
         ProductSearchResult(
@@ -148,18 +166,20 @@ async def search_products(
 
 
 # ── /facets Endpoint ──────────────────────────────────────
-@router.get("/facets", response_model=FacetResponse)
+@router.get("/facets", response_model=FacetResponse,
+            dependencies=[Depends(rate_limit("search", "RATE_LIMIT_PER_MINUTE"))])
 async def facets(
     key: Literal["category", "product_class"] = Query(default="category"),
     limit: int = Query(default=100, ge=1, le=1000),
     service: ProductSearchService = Depends(get_search_service),
 ) -> FacetResponse:
-    values = await service.facet_counts(key=key, limit=limit)
+    values = await _search_or_503(service.facet_counts(key=key, limit=limit))
     return FacetResponse(key=key, values=[FacetValue(**v) for v in values])
 
 
 # ── /ask Endpoint ─────────────────────────────────────────
-@router.post("/ask", response_model=AskResponseEnvelope)
+@router.post("/ask", response_model=AskResponseEnvelope,
+             dependencies=[Depends(rate_limit("ask", "ASK_RATE_LIMIT_PER_MINUTE"))])
 async def ask_products(
     request: SearchQueryRequest,
     search_service: ProductSearchService = Depends(get_search_service),
@@ -197,9 +217,9 @@ async def ask_products(
     # Step 2: Hybrid search under hard filters
     logger.info(f"[CACHE MISS] query='{request.q}' → text='{resolved.text}' filters={resolved.filters.model_dump(exclude_defaults=True)}")
     search_start = time.perf_counter()
-    raw_results = await search_service.search(
+    raw_results = await _search_or_503(search_service.search(
         query=resolved.text, limit=request.limit, filters=resolved.filters, prefer_size=resolved.size,
-    )
+    ))
     search_ms = _ms(search_start)
 
     if not raw_results:

@@ -6,6 +6,18 @@ import streamlit as st
 from components.diagnostics import render_diagnostics
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+# Sent server-side only; the browser never sees it.
+API_KEY = os.getenv("API_KEY", "")
+HEADERS = {"X-API-Key": API_KEY} if API_KEY else {}
+
+
+def error_message(response: requests.Response) -> str:
+    """The backend's error envelope message, with its request id for support."""
+    try:
+        err = response.json()["error"]
+        return f"{err['message']} (request id {err.get('request_id')})"
+    except Exception:
+        return f"The backend returned HTTP {response.status_code}."
 
 
 # ── Page Config ───────────────────────────────────────────
@@ -40,7 +52,7 @@ if "last_interpretation" not in st.session_state:
 @st.cache_data(ttl=600, show_spinner=False)
 def load_categories() -> list[str]:
     try:
-        r = requests.get(f"{BACKEND_URL}/api/v1/facets", params={"key": "category"}, timeout=5)
+        r = requests.get(f"{BACKEND_URL}/api/v1/facets", params={"key": "category"}, headers=HEADERS, timeout=5)
         r.raise_for_status()
         return [v["value"] for v in r.json()["values"]]
     except Exception:
@@ -98,8 +110,9 @@ elif search_clicked and query.strip():
     body = {"q": query.strip(), "limit": 5, **({"filters": explicit} if explicit else {})}
     with st.spinner("Searching..."):
         try:
-            response = requests.post(f"{BACKEND_URL}/api/v1/ask", json=body, timeout=30)
-            response.raise_for_status()
+            response = requests.post(f"{BACKEND_URL}/api/v1/ask", json=body, headers=HEADERS, timeout=30)
+            if not response.ok:
+                raise RuntimeError(error_message(response))
             data = response.json()
 
             st.session_state.last_answer = data.get("answer", "")
@@ -116,6 +129,8 @@ elif search_clicked and query.strip():
             st.error("Cannot connect to backend. Make sure the FastAPI server is running.")
         except requests.exceptions.Timeout:
             st.error("Request timed out. The LLM may be under load.")
+        except RuntimeError as e:
+            st.error(str(e))
         except Exception as e:
             st.error(f"Unexpected error: {e}")
 

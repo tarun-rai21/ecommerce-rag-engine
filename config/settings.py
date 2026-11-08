@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     QDRANT_PORT: int = Field(default=6333)
     QDRANT_GRPC_PORT: int = Field(default=6334)
     COLLECTION_NAME: str = "wands_products"
+    QDRANT_TIMEOUT_SECONDS: int = Field(default=5, ge=1)
 
     # ── Retrieval ─────────────────────────────────────────
     # Tuned on the WANDS dev split (2026-11-01): k=30, prefetch=100 had the best nDCG@10.
@@ -45,6 +46,23 @@ class Settings(BaseSettings):
     CACHE_BREAKER_TIMEOUTS: int = Field(default=5, ge=1)  # timeouts in a row before Redis is skipped
     # Bump whenever the index or response format changes so stale entries are never served.
     CACHE_VERSION: str = "v3"  # v3: WANDS index + filters in the response
+
+    # ── API safeguards ────────────────────────────────────
+    # Defaults suit local development (open, unlimited); a public deployment must set
+    # API_KEYS and the rate limits.
+    API_KEYS: str = ""  # comma-separated keys accepted in X-API-Key; empty = no auth
+    RATE_LIMIT_PER_MINUTE: int = Field(default=0, ge=0)  # /search and /facets, per client; 0 = off
+    ASK_RATE_LIMIT_PER_MINUTE: int = Field(default=0, ge=0)  # /ask calls the paid LLM, so set it lower
+    CORS_ORIGINS: str = ""  # comma-separated browser origins allowed to call the API; empty = none
+    DOCS_ENABLED: bool = True  # /docs, /redoc and /openapi.json
+
+    @property
+    def api_keys(self) -> list[str]:
+        return [k.strip() for k in self.API_KEYS.split(",") if k.strip()]
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [o.strip() for o in self.CORS_ORIGINS.split(",") if o.strip()]
 
     model_config = {
         "env_file": ".env",

@@ -2,10 +2,14 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 from qdrant_client import QdrantClient
 
+from src.backend.main import app
+from src.backend.services.cache import CacheService
 from src.ingestion.embedder import ProductEmbedder
 from src.ingestion.ingest import ensure_collection, ingest_records
+from tests.fakes import FakeLLM, FakeRedis, FakeSearch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COLLECTION = "test_products"
@@ -40,3 +44,14 @@ def indexed_path(tmp_path_factory, embedder, sample_products) -> str:
     assert report.uploaded == len(sample_products) and not report.failures
     client.close()
     return path
+
+
+@pytest.fixture
+def make_client():
+    def _make(search=None, redis=None, llm=None):
+        app.state.search_service = search or FakeSearch()
+        app.state.cache_service = CacheService(client=redis or FakeRedis())
+        app.state.llm_service = llm or FakeLLM()
+        # Not used as a context manager, so the lifespan (real services) doesn't run.
+        return TestClient(app, raise_server_exceptions=False)
+    return _make

@@ -39,6 +39,7 @@ from src.evaluation.retrieval_eval import _git_sha
 REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
 SEED = 11
 PARTS = ("search", "ask-miss", "ask-hit")
+HEADERS: dict[str, str] = {}  # X-API-Key, set from --api-key
 
 
 @dataclass
@@ -71,7 +72,7 @@ async def closed_loop(base_url: str, path: str, payloads: list[dict], users: int
     queue = itertools.cycle(payloads)
     samples: list[Sample] = []
     limits = httpx.Limits(max_connections=users, max_keepalive_connections=users)
-    async with httpx.AsyncClient(base_url=base_url, timeout=60, limits=limits) as client:
+    async with httpx.AsyncClient(base_url=base_url, timeout=60, limits=limits, headers=HEADERS) as client:
         t0 = time.perf_counter()
         measure_from, stop_at = t0 + warmup_s, t0 + warmup_s + duration_s
 
@@ -129,7 +130,7 @@ async def ask_miss(args, payloads: list[dict]) -> list[dict]:
         redis.Redis(host=args.redis_host, port=args.redis_port).flushdb()
         logger.info("Redis cache flushed: every /ask below is a miss")
     rows = []
-    async with httpx.AsyncClient(base_url=args.base_url, timeout=120) as client:
+    async with httpx.AsyncClient(base_url=args.base_url, timeout=120, headers=HEADERS) as client:
         for i, payload in enumerate(payloads, start=1):
             s = await send(client, "/api/v1/ask", payload)
             rows.append({"q": payload["q"], "latency_ms": s.latency_ms, "ok": s.ok, "status": s.status,
@@ -210,7 +211,8 @@ def to_markdown(report: dict) -> str:
 async def main_async(args) -> dict:
     queries = [q.text for q in load_wands_queries(split="test")]
     random.Random(SEED).shuffle(queries)
-    report = {"commit": _git_sha(), "config": {k: v for k, v in vars(args).items() if k != "parts"}, "parts": args.parts}
+    report = {"commit": _git_sha(), "parts": args.parts,
+              "config": {k: v for k, v in vars(args).items() if k not in ("parts", "api_key")}}
 
     if "search" in args.parts:
         payloads = [{"q": q, "limit": 10} for q in queries]
@@ -237,7 +239,10 @@ def main(argv: list[str] | None = None) -> None:
                    help="flush Redis before ask-miss so every request is a miss")
     p.add_argument("--redis-host", default="localhost")
     p.add_argument("--redis-port", type=int, default=6379)
+    p.add_argument("--api-key", default="", help="sent as X-API-Key when the API requires one")
     args = p.parse_args(argv)
+    if args.api_key:
+        HEADERS["X-API-Key"] = args.api_key
 
     report = asyncio.run(main_async(args))
     markdown = to_markdown(report)

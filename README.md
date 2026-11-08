@@ -226,6 +226,42 @@ The suite uses Qdrant's local mode and the real embedding models, so it does not
 
 ## API Reference
 
+### Safeguards
+
+Settings come from the environment (see `.env.example`). The defaults suit local development: no key, no limits. A public deployment sets all of them.
+
+| Setting | Effect |
+|---|---|
+| `API_KEYS` | Comma-separated keys. When set, every `/api/v1` route needs one in the `X-API-Key` header, otherwise `401`. Keys are compared in constant time. |
+| `RATE_LIMIT_PER_MINUTE` | Per client on `/search` and `/facets`. The client is the API key when one is sent, else the IP. Over the limit: `429` with `Retry-After`. |
+| `ASK_RATE_LIMIT_PER_MINUTE` | The same for `/ask`, separately, because `/ask` can call the paid LLM. |
+| `CORS_ORIGINS` | Browser origins allowed to call the API; empty means none. The Streamlit UI calls the API from its server, so it needs none. |
+| `DOCS_ENABLED` | Serves `/docs` and the OpenAPI schema. |
+
+- **Rate limits** use a token bucket per client, so short bursts up to the per-minute figure are allowed. The buckets are in memory, so each process keeps its own count; several instances would need a shared store such as Redis.
+- **Questions** have control and invisible formatting characters (null bytes, zero-width spaces, text-direction overrides) replaced by spaces before validation.
+- **Qdrant calls** time out after `QDRANT_TIMEOUT_SECONDS` (5 s).
+- **The UI's key** (`FRONTEND_API_KEY`) is sent from the Streamlit server, so it never reaches the browser.
+
+**Errors** all share one format, and the rejected input is never echoed back:
+
+```json
+{"error": {"code": "rate_limited", "message": "Too many requests: the limit is 5 per minute. Try again in 12 s.",
+           "request_id": "49479d8553b744669219c1b2fa63292a"}}
+```
+
+Codes: `invalid_request` (422, with a `details` list of fields), `unauthorized` (401), `rate_limited` (429), `not_found` (404), `search_unavailable` (503, Qdrant unreachable) and `internal_error` (500). Every response carries an `X-Request-ID` header: the caller's own, if it's short and plain, otherwise a new one. The same id is in the server log line for that request.
+
+### GET /healthz and GET /readyz
+
+Probes outside `/api/v1` that need no key. `/healthz` answers whenever the process is up. `/readyz` returns `200` only if Qdrant answers and the collection has products, and reports Redis and the LLM without depending on them, because the API still works without its cache or its answers:
+
+```json
+{"status": "ready", "checks": {"qdrant": {"ok": true, "points": 42994}, "cache": {"ok": true}, "llm": {"ok": true}}}
+```
+
+Docker Compose uses `/readyz` as the backend's health check, and the frontend starts once the backend is healthy.
+
 ### POST /api/v1/search
 Hybrid semantic + keyword search. Returns ranked products with RRF scores.
 
@@ -527,6 +563,12 @@ ecommerce-rag-engine/
 │   ├── backend/
 
 │   │   ├── main.py           # FastAPI app + lifespan
+
+│   │   ├── api/
+│   │   │   ├── health.py     # /healthz, /readyz
+│   │   │   ├── errors.py     # Error envelope + exception handlers
+│   │   │   ├── security.py   # API keys + token-bucket rate limiting
+│   │   │   └── middleware.py # Request id, access log, latency header
 
 │   │   ├── api/v1/
 
