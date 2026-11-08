@@ -52,7 +52,7 @@ class FakeLLM:
     async def generate_answer(self, query, context):
         self.calls += 1
         self.contexts.append(context)
-        return LLMResult("answer", True) if self.ok else LLMResult(UNAVAILABLE_MESSAGE, False)
+        return LLMResult("answer", True, 900, 150) if self.ok else LLMResult(UNAVAILABLE_MESSAGE, False)
 
 
 @pytest.fixture
@@ -75,6 +75,7 @@ def test_cache_hit_returns_same_products(make_client):
     assert second["retrieved_products"] == first["retrieved_products"]
     assert len(second["retrieved_products"]) == 3
     assert llm.calls == 1
+    assert first["usage"] == second["usage"] == {"prompt_tokens": 900, "completion_tokens": 150}
 
 
 def test_cache_key_includes_limit(make_client):

@@ -41,6 +41,7 @@ services:
       - COLLECTION_NAME=wands_products
       - GROQ_API_KEY=${GROQ_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-20b}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-300}
     depends_on:
       - qdrant
       - redis

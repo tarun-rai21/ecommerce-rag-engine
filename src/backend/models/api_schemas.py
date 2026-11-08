@@ -50,6 +50,11 @@ class TimingBreakdown(BaseModel):
     total_ms: float
 
 
+class TokenUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int  # includes the model's reasoning tokens, which are billed
+
+
 AnswerSource = Literal["llm", "cache", "no_results", "llm_error"]
 
 
@@ -61,6 +66,9 @@ class AskResponseEnvelope(BaseModel):
     interpreted_query: str
     applied_filters: SearchFilters
     preferred_size: str | None = None
+    # Tokens of the LLM call that produced this answer. A cache hit repeats them but
+    # costs nothing; count cost only where source == "llm".
+    usage: TokenUsage | None = None
 
 
 class FacetValue(BaseModel):

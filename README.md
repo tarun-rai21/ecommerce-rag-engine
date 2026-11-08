@@ -119,8 +119,8 @@ Fusing ranks instead of scores avoids calibrating cosine similarity against BM25
 - Redis with a 5-minute TTL caches the **full `/ask` response** (answer + retrieved products), so a cache hit returns exactly what the original request did
 - Keys: `rag:<cache version>:ask:limit=<n>:<md5(normalized query)>`. Normalization (lowercase, trimmed, whitespace collapsed) makes "Waterproof  Bag" and "waterproof bag" share an entry; the version prefix is bumped on re-index so stale answers are never served
 - Only successful LLM answers are cached, never fallback messages
-- **Fail-open with a circuit breaker:** each Redis call has a 250 ms budget; after a failure the cache is bypassed for 30 s, so an outage costs one timeout rather than one per request
-- Measured locally: cache hit ≈ 1.5–11 ms end-to-end vs ≈ 300–950 ms for a full search + LLM request
+- **Fail-open with a circuit breaker:** each Redis call has a 250 ms budget. A connection error bypasses the cache for 30 s, so an outage costs one failed call rather than one per request. Timeouts bypass it only after 5 in a row, because under load a single late call usually means a busy event loop, not a failed Redis (see the [load test](#load-test))
+- Measured under load: a cache hit takes about 2 ms in the server and a median 52 ms at the client (most of it Docker Desktop's port forwarding on Windows), against a median 751 ms for a miss, which calls the LLM
 
 ### 5. Query Understanding & Hard Filters
 Shoppers write constraints into the query: "grey area rug under $150", "desk lamp 4.5+ stars". `query_parser.py` turns them into structured filters and removes them from the text used for retrieval:
@@ -258,7 +258,8 @@ Response: {
   },
   "interpreted_query": "mid-century modern coffee table",
   "applied_filters": {...},
-  "preferred_size": null    // e.g. "8x10" when the query names a room size
+  "preferred_size": null,   // e.g. "8x10" when the query names a room size
+  "usage": {"prompt_tokens": 1026, "completion_tokens": 176}  // of the LLM call; a cache hit costs nothing
 }
 ```
 `/ask` accepts the same `filters` and `parse_filters` fields as `/search`.
@@ -378,6 +379,42 @@ Against the version before these changes, on the same queries: out-of-catalog re
 Read the 84.3% above as an upper estimate. The misses are mostly small embellishments ("classic design", a product name read as a material). Limits: the reviewer is an AI, it had already seen the judge's flagged claims for this run, so agreement may be inflated, it marked an answer down for a single unsupported word, and 30 answers is a small sample. A human review is still needed before calling the judge human-validated.
 
 Every LLM call is cached by its full request in `.cache/llm_calls.sqlite`, so an unchanged re-run is free. A cold run takes about 2 hours on Groq's free tier, and longer when its rate limits force long waits.
+
+### Load test
+
+```bash
+python -m benchmarks.load_test                    # about 15 minutes; needs the stack running
+python -m benchmarks.load_test --parts search     # /search only, no LLM calls
+```
+
+Closed-loop users send requests back to back with no think time: 5 s warm-up, then 30 s measured per level, using WANDS test queries. The client runs on the same 4-core laptop as the stack (i5-8265U, Docker capped at 4 GB), so it competes for CPU and the numbers understate what the server alone could do. Every `/ask` cache miss calls Groq, whose free tier allows only a few calls a minute, so `/ask` is measured in three parts. Latency in ms with 95% bootstrap CIs.
+
+**`/search`** (parsing, embedding, Qdrant hybrid search, RRF; no cache):
+
+| Users | Requests/s | p50 | p95 | p99 | Errors |
+|---|---|---|---|---|---|
+| 1 | 14.4 | 75 [73, 76] | 89 [87, 92] | 104 [95, 121] | 0 |
+| 4 | 37.4 | 103 [102, 104] | 147 [143, 153] | 182 [175, 204] | 0 |
+| 8 | 37.3 | 206 [203, 209] | 313 [302, 323] | 405 [387, 423] | 0 |
+| 16 | 42.0 | 375 [371, 378] | 500 [489, 520] | 586 [574, 625] | 0 |
+| 32 | 34.9 | 855 [843, 872] | 1,468 [1,357, 1,559] | 1,882 [1,723, 2,081] | 0 |
+
+Throughput levels off at about 40 requests/s from 4 users, where the CPU-bound query embedding saturates the four cores; beyond that, extra users only queue.
+
+**`/ask`, cache miss** (20 questions, one at a time, 20 s apart): median 751 ms end to end, of which the LLM call is 704 ms, search 26 ms and the cache lookup 1 ms. A prompt is about 1,000 tokens (855–1,174), and an answer has a median of 176 completion tokens (29–380, including reasoning).
+
+**`/ask`, cache hit** (the same 20 questions, after the fix below):
+
+| Users | Requests/s | p50 | p95 | p99 | Errors |
+|---|---|---|---|---|---|
+| 1 | 18.7 | 52 [52, 52] | 64 [62, 65] | 69 [67, 72] | 0 |
+| 8 | 124.4 | 59 [59, 60] | 98 [95, 100] | 154 [140, 170] | 0 |
+| 16 | 122.5 | 116 [115, 117] | 207 [202, 212] | 409 [364, 417] | 0 |
+| 32 | 79.1 | 134 [131, 138] | 1,545 [1,452, 1,667] | 2,590 [2,387, 2,957] | 0 |
+
+The server spends about 2 ms on a hit; most of the ~50 ms floor is Docker Desktop's port forwarding on Windows.
+
+**A failure the load test found.** In the first run at 32 users, one Redis lookup overran its 250 ms budget because the event loop was busy. The circuit breaker treated that as Redis being down and skipped the cache for 30 s, so every request went to search and the LLM, and Groq rejected 53 calls for rate limits. Shoppers saw "please try again later", p95 reached 9.7 s, and throughput fell to 21 requests/s. The breaker now opens at once on a connection error, as before, but only after 5 timeouts in a row; any success resets the count. In the rerun, 32 users got 79 requests/s, p95 1.5 s and no errors. No lookup timed out in the rerun, so the new rule wasn't exercised there; unit tests cover it.
 
 ### Cross-encoder reranking: tested, not enabled
 
@@ -515,6 +552,8 @@ ecommerce-rag-engine/
 
 │       └── eval.py           # HTTP smoke evaluation + gate
 
+├── benchmarks/
+│   └── load_test.py          # Closed-loop load test: /search, /ask misses and hits
 ├── tests/                    # pytest: ingestion, search, API, cache, metrics, LLM
 
 ├── Dockerfile.backend

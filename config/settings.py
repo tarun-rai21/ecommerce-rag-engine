@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     CACHE_TTL_SECONDS: int = Field(default=300, ge=1)
     CACHE_OP_TIMEOUT_SECONDS: float = Field(default=0.25, gt=0)
     CACHE_COOLDOWN_SECONDS: float = Field(default=30.0, ge=0)
+    CACHE_BREAKER_TIMEOUTS: int = Field(default=5, ge=1)  # timeouts in a row before Redis is skipped
     # Bump whenever the index or response format changes so stale entries are never served.
     CACHE_VERSION: str = "v3"  # v3: WANDS index + filters in the response
 

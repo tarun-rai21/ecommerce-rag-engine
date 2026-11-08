@@ -11,6 +11,7 @@ from src.backend.models.api_schemas import (
     SearchResponseEnvelope,
     RetrievedProduct,
     TimingBreakdown,
+    TokenUsage,
     AskResponseEnvelope,
     FacetResponse,
     FacetValue,
@@ -243,6 +244,8 @@ async def ask_products(
         interpreted_query=resolved.text,
         applied_filters=resolved.filters,
         preferred_size=resolved.size,
+        usage=TokenUsage(prompt_tokens=llm_result.prompt_tokens, completion_tokens=llm_result.completion_tokens)
+        if llm_result.prompt_tokens is not None and llm_result.completion_tokens is not None else None,
     )
 
     # Step 4: Cache write — successful generations only, never fallback messages.

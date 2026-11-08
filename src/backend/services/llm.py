@@ -74,6 +74,9 @@ def clean_output(text: str | None) -> str:
 class LLMResult:
     answer: str
     ok: bool  # False when generation failed and `answer` is a fallback message
+    # Billed tokens of the call (completion includes reasoning tokens); None if not reported.
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
 
 
 class LLMService:
@@ -97,20 +100,23 @@ class LLMService:
         retry=retry_if_exception_type((RateLimitError, APIConnectionError)),
         reraise=True,
     )
-    def _call_groq_sync(self, messages: list[dict]) -> str:
+    def _call_groq_sync(self, messages: list[dict]) -> LLMResult:
         response = self.client.chat.completions.create(
             model=self.model_name, messages=messages, **GENERATION_PARAMS, **self.extra_params,
         )
         content = clean_output(response.choices[0].message.content)
         if not content:
             raise ValueError("LLM returned an empty response")
-        return content
+        usage = getattr(response, "usage", None)
+        return LLMResult(answer=content, ok=True,
+                         prompt_tokens=getattr(usage, "prompt_tokens", None),
+                         completion_tokens=getattr(usage, "completion_tokens", None))
 
     async def generate_answer(self, query: str, context: str) -> LLMResult:
         try:
-            answer = await asyncio.to_thread(self._call_groq_sync, build_messages(query, context))
+            result = await asyncio.to_thread(self._call_groq_sync, build_messages(query, context))
             logger.info(f"LLM response generated for query: '{query}'")
-            return LLMResult(answer=answer, ok=True)
+            return result
         except Exception as e:
             logger.error(f"LLM generation failed after retries: {e!r}")
             return LLMResult(answer=UNAVAILABLE_MESSAGE, ok=False)

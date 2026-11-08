@@ -20,14 +20,37 @@ def test_cache_key_normalises_query_and_includes_params():
 
 
 class _SlowOrBrokenRedis:
+    """mode: "slow" (every call hangs), "broken" (connection error), or a list of
+    per-call behaviours: "slow" or "ok"."""
     def __init__(self, mode):
         self.mode, self.calls = mode, 0
 
     async def get(self, key):
         self.calls += 1
-        if self.mode == "slow":
+        step = self.mode[self.calls - 1] if isinstance(self.mode, list) else self.mode
+        if step == "ok":
+            return "v"
+        if step == "slow":
             await asyncio.sleep(5)
         raise OSError("Name or service not known")
+
+
+async def _gets(cache, n):
+    return [await cache.get("k") for _ in range(n)]
+
+
+def test_cache_single_timeout_does_not_open_breaker():
+    redis = _SlowOrBrokenRedis(["slow", "ok", "slow", "ok"])
+    cache = CacheService(client=redis, op_timeout=0.05, cooldown=30, breaker_timeouts=3)
+    assert asyncio.run(_gets(cache, 4)) == [None, "v", None, "v"]
+    assert redis.calls == 4 and cache.available
+
+
+def test_cache_breaker_opens_after_timeouts_in_a_row():
+    redis = _SlowOrBrokenRedis("slow")
+    cache = CacheService(client=redis, op_timeout=0.05, cooldown=30, breaker_timeouts=3)
+    asyncio.run(_gets(cache, 5))
+    assert redis.calls == 3 and not cache.available  # calls 4 and 5 skipped Redis
 
 
 def test_cache_op_is_time_bounded():
@@ -86,6 +109,16 @@ def _fake_groq(content):
 def test_llm_success():
     result = asyncio.run(LLMService(client=_fake_groq(" hello ")).generate_answer("q", "ctx"))
     assert result.ok and result.answer == "hello"
+
+
+def test_llm_reports_token_usage():
+    create = lambda **kw: SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))],
+        usage=SimpleNamespace(prompt_tokens=1200, completion_tokens=340))
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    result = asyncio.run(LLMService(client=client).generate_answer("q", "ctx"))
+    assert (result.prompt_tokens, result.completion_tokens) == (1200, 340)
+    assert asyncio.run(LLMService(client=_fake_groq("hi")).generate_answer("q", "c")).prompt_tokens is None
 
 
 def test_llm_strips_think_block():
