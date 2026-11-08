@@ -1,0 +1,23 @@
+# HTTPS front door. Caddy obtains and renews a Let's Encrypt certificate for $DOMAIN
+# automatically (ports 80 and 443 must be open to the internet).
+{$DOMAIN} {
+	encode zstd gzip
+
+	# The API and its docs go to FastAPI (which requires an API key on /api/v1).
+	@api path /api/* /healthz /readyz /docs /docs/* /redoc /openapi.json
+	handle @api {
+		reverse_proxy backend:8000
+	}
+
+	# Everything else is the Streamlit UI (it uses WebSockets, which Caddy proxies as-is).
+	handle {
+		reverse_proxy frontend:8501
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}

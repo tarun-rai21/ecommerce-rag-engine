@@ -108,9 +108,11 @@ elif search_clicked and query.strip():
     explicit = {k: v for k, v in {"min_price": min_price, "max_price": max_price,
                                   "min_rating": min_rating, "categories": categories}.items() if v not in (None, [])}
     body = {"q": query.strip(), "limit": 5, **({"filters": explicit} if explicit else {})}
-    with st.spinner("Searching..."):
+    # A free-tier backend that has slept takes about a minute to wake on the first request.
+    with st.spinner("Searching... The first search after a quiet spell can take up to a minute "
+                    "while the free-tier backend wakes up."):
         try:
-            response = requests.post(f"{BACKEND_URL}/api/v1/ask", json=body, headers=HEADERS, timeout=30)
+            response = requests.post(f"{BACKEND_URL}/api/v1/ask", json=body, headers=HEADERS, timeout=90)
             if not response.ok:
                 raise RuntimeError(error_message(response))
             data = response.json()
@@ -128,7 +130,8 @@ elif search_clicked and query.strip():
         except requests.exceptions.ConnectionError:
             st.error("Cannot connect to backend. Make sure the FastAPI server is running.")
         except requests.exceptions.Timeout:
-            st.error("Request timed out. The LLM may be under load.")
+            st.error("The request timed out. If the backend was asleep it should be awake now, "
+                     "so please try again.")
         except RuntimeError as e:
             st.error(str(e))
         except Exception as e:

@@ -63,9 +63,7 @@ class IngestionReport:
 # ── Qdrant Setup ─────────────────────────────────────────
 def get_client() -> QdrantClient:
     return QdrantClient(
-        host=settings.QDRANT_HOST,
-        grpc_port=settings.QDRANT_GRPC_PORT,
-        prefer_grpc=True,
+        **settings.qdrant_client_kwargs(),
         timeout=60,  # collection create/delete can be slow on Docker Desktop volumes
     )
 

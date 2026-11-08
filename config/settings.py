@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     QDRANT_GRPC_PORT: int = Field(default=6334)
     COLLECTION_NAME: str = "wands_products"
     QDRANT_TIMEOUT_SECONDS: int = Field(default=5, ge=1)
+    # Managed Qdrant (e.g. Qdrant Cloud): when QDRANT_URL is set it replaces host/ports,
+    # e.g. https://xyz.us-east-1-0.aws.cloud.qdrant.io:6333 (gRPC goes to 6334 over TLS).
+    QDRANT_URL: str = ""
+    QDRANT_API_KEY: str = ""
 
     # ── Retrieval ─────────────────────────────────────────
     # Tuned on the WANDS dev split (2026-11-01): k=30, prefetch=100 had the best nDCG@10.
@@ -37,9 +41,16 @@ class Settings(BaseSettings):
     LLM_REASONING_EFFORT: str = "low"
     LLM_TIMEOUT_SECONDS: float = 20.0
 
+    # ── Embedding ─────────────────────────────────────────
+    # ONNX Runtime threads per model; 0 = its default (one per core). On a host with a
+    # fraction of a CPU, 1 avoids threads fighting over it and saves memory.
+    EMBED_THREADS: int = Field(default=0, ge=0)
+
     # ── Cache ─────────────────────────────────────────────
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = Field(default=6379)
+    # Managed Redis (e.g. Upstash): when set it replaces host/port. rediss:// = TLS.
+    REDIS_URL: str = ""
     CACHE_TTL_SECONDS: int = Field(default=300, ge=1)
     CACHE_OP_TIMEOUT_SECONDS: float = Field(default=0.25, gt=0)
     CACHE_COOLDOWN_SECONDS: float = Field(default=30.0, ge=0)
@@ -55,6 +66,12 @@ class Settings(BaseSettings):
     ASK_RATE_LIMIT_PER_MINUTE: int = Field(default=0, ge=0)  # /ask calls the paid LLM, so set it lower
     CORS_ORIGINS: str = ""  # comma-separated browser origins allowed to call the API; empty = none
     DOCS_ENABLED: bool = True  # /docs, /redoc and /openapi.json
+
+    def qdrant_client_kwargs(self) -> dict:
+        """Connection arguments for QdrantClient / AsyncQdrantClient (gRPC either way)."""
+        if self.QDRANT_URL:
+            return {"url": self.QDRANT_URL, "api_key": self.QDRANT_API_KEY or None, "prefer_grpc": True}
+        return {"host": self.QDRANT_HOST, "grpc_port": self.QDRANT_GRPC_PORT, "prefer_grpc": True}
 
     @property
     def api_keys(self) -> list[str]:

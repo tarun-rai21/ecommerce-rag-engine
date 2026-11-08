@@ -83,10 +83,7 @@ class ProductSearchService:
         reranker: RerankerService | None = None,
     ) -> None:
         self.client = client or AsyncQdrantClient(
-            host=settings.QDRANT_HOST,
-            grpc_port=settings.QDRANT_GRPC_PORT,
-            prefer_grpc=True,
-            timeout=settings.QDRANT_TIMEOUT_SECONDS,
+            **settings.qdrant_client_kwargs(), timeout=settings.QDRANT_TIMEOUT_SECONDS,
         )
         self.embedder = embedder or ProductEmbedder()
         self.collection_name = collection_name or settings.COLLECTION_NAME

@@ -34,20 +34,27 @@ class CacheService:
         cooldown: float | None = None,
         breaker_timeouts: int | None = None,
     ) -> None:
-        self.client = client or aioredis.Redis(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            decode_responses=True,
-            socket_connect_timeout=0.5,
-            socket_timeout=0.5,
-            retry=Retry(NoBackoff(), 0),  # no client-side retries; the breaker handles outages
-        )
+        self.client = client or self._connect()
         self.op_timeout = op_timeout if op_timeout is not None else settings.CACHE_OP_TIMEOUT_SECONDS
         self.cooldown = cooldown if cooldown is not None else settings.CACHE_COOLDOWN_SECONDS
         self.breaker_timeouts = breaker_timeouts if breaker_timeouts is not None else settings.CACHE_BREAKER_TIMEOUTS
         self._skip_until = 0.0
         self._timeout_streak = 0
-        logger.info(f"CacheService initialized at '{settings.REDIS_HOST}:{settings.REDIS_PORT}'")
+        # Never log REDIS_URL itself: it contains the password.
+        target = "REDIS_URL" if settings.REDIS_URL else f"'{settings.REDIS_HOST}:{settings.REDIS_PORT}'"
+        logger.info(f"CacheService initialized at {target}")
+
+    @staticmethod
+    def _connect() -> aioredis.Redis:
+        options = {
+            "decode_responses": True,
+            "socket_connect_timeout": 0.5,
+            "socket_timeout": 0.5,
+            "retry": Retry(NoBackoff(), 0),  # no client-side retries; the breaker handles outages
+        }
+        if settings.REDIS_URL:  # managed Redis, e.g. rediss://default:<password>@<host>:6379
+            return aioredis.from_url(settings.REDIS_URL, **options)
+        return aioredis.Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, **options)
 
     @staticmethod
     def make_key(namespace: str, query: str, **params: object) -> str:

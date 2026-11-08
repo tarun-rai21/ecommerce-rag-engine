@@ -2,6 +2,8 @@ from typing import Any
 
 from fastembed import SparseTextEmbedding, TextEmbedding
 
+from config.settings import settings
+
 DENSE_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 SPARSE_MODEL_NAME = "Qdrant/bm25"
 
@@ -21,8 +23,9 @@ class ProductEmbedder:
     """
 
     def __init__(self) -> None:
-        self.dense_model = TextEmbedding(model_name=DENSE_MODEL_NAME)
-        self.sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL_NAME)
+        threads = settings.EMBED_THREADS or None
+        self.dense_model = TextEmbedding(model_name=DENSE_MODEL_NAME, threads=threads)
+        self.sparse_model = SparseTextEmbedding(model_name=SPARSE_MODEL_NAME, threads=threads)
 
     @property
     def model_tag(self) -> str:

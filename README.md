@@ -231,6 +231,73 @@ The suite uses Qdrant's local mode and the real embedding models, so it does not
 
 ---
 
+## Deployment
+
+### Live demo: free managed services
+
+```
+Visitor ──▶ Streamlit Community Cloud (UI)
+               │  HTTPS + X-API-Key, sent from Streamlit's server (the browser never sees the key)
+               ▼
+            Render (FastAPI backend, Docker image from Dockerfile.backend)
+               ├──▶ Qdrant Cloud   (index, free 1 GB cluster)
+               ├──▶ Upstash Redis  (answer cache over TLS, rediss://)
+               └──▶ Groq           (LLM)
+```
+
+Each service runs on its own free tier. The backend is configured by environment only: `QDRANT_URL` and `QDRANT_API_KEY` replace the local host and ports, `REDIS_URL` replaces the Redis host and port, and `render.yaml` holds the Render service as code, with the secrets entered in the dashboard.
+
+- **Render's free plan** gives 512 MB of RAM and 0.1 CPU, and sleeps after 15 minutes without traffic. Under those limits, simulated locally with `docker run --cpus 0.1 --memory 512m`, the backend:
+  - uses 292 MB;
+  - takes 0.17–0.42 s per search, against about 0.03 s on a 4-core laptop;
+  - needs about 60 s from a cold start to ready, mostly loading the models.
+
+  With `EMBED_THREADS=1`, ONNX Runtime runs one thread per model instead of competing for the small CPU share. The UI waits up to 90 s and tells the visitor that the first search can be slow while the backend wakes.
+- **Loading the index:** `python deploy/upload_snapshot.py` sends a snapshot of the local collection (195 MB) to Qdrant Cloud. It asks for the cluster URL and API key and doesn't print or store them.
+- **Streamlit Community Cloud** installs `src/frontend/requirements.txt`, which a test keeps identical to `requirements-frontend.txt`. It reads `BACKEND_URL` and `API_KEY` from the app's secrets, which it also exposes as environment variables.
+
+### AWS (planned)
+
+The same Docker stack runs on a single EC2 instance, with [Caddy](https://caddyserver.com) in front for HTTPS:
+
+```
+Internet ──HTTPS──▶ Caddy :80/:443 (automatic Let's Encrypt certificate, HTTP → HTTPS)
+                      ├── /                → Streamlit UI
+                      └── /api, /docs, ... → FastAPI (API key required on /api/v1)
+                                              ├── Qdrant  (not exposed; loopback only for loading the index)
+                                              ├── Redis   (not exposed)
+                                              └── Groq API
+```
+
+- **Instance:** t3.small (2 vCPU, 2 GB RAM) in ap-south-1 with Ubuntu 24.04, plus 2 GB of swap. The stack uses about 0.6 GB in steady state.
+- **Address:** an Elastic IP, with a free `sslip.io` hostname (`13-232-1-2.sslip.io` resolves to `13.232.1.2`) so Let's Encrypt can issue a certificate without a purchased domain.
+- **Firewall:** the security group opens 80 and 443 to everyone and 22 (SSH) to one IP only. Only Caddy publishes ports.
+- **Cost:** about $20/month on demand: the instance about $16, the public IPv4 address $3.60 and a 20 GB gp3 disk about $2.
+- **The index isn't rebuilt on the server.** Embedding 43k products takes about an hour on a laptop and far longer on a t3.small, so `deploy/upload-index.sh` sends a Qdrant snapshot of the local collection (195 MB) over SSH and restores it in about 15 s.
+- **Single-instance limits:** the server isn't redundant, and rate limits and the cache are per process. The whole UI shares one rate-limit bucket on `/ask`, because the Streamlit server makes the calls. That protects the Groq quota, but at busy moments visitors can be asked to retry.
+
+**Steps:**
+
+```bash
+# 1. One-time server setup (Docker, swap, automatic security updates, clone)
+ssh -i key.pem ubuntu@<ip> 'bash -s' < deploy/setup-server.sh
+
+# 2. On the server: ~/ecommerce-rag-engine/.env with
+#    DOMAIN=<ip-with-dashes>.sslip.io, GROQ_API_KEY=..., API_KEYS=<random>, FRONTEND_API_KEY=<same>
+#    (generate a key with: openssl rand -hex 24)
+
+# 3. Start Qdrant, then load the index from the local machine
+ssh -i key.pem ubuntu@<ip> 'cd ecommerce-rag-engine && docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d qdrant'
+deploy/upload-index.sh ubuntu@<ip> key.pem
+
+# 4. Start everything (builds the images on the server)
+ssh -i key.pem ubuntu@<ip> 'cd ecommerce-rag-engine && docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build'
+
+# Update after a push: git pull, then step 4 again. Smoke test: https://<domain>/readyz
+```
+
+The whole production stack was first rehearsed locally with `DOMAIN=localhost`. The snapshot restored all 42,994 points with the BM25 IDF modifier intact, HTTP redirected to HTTPS, `/api/v1` refused requests without a key, `/ask` answered through Caddy, the Streamlit UI loaded over its WebSocket, and nothing but Caddy answered on the host's ports.
+
 ## API Reference
 
 ### Safeguards
@@ -628,6 +695,13 @@ ecommerce-rag-engine/
 
 │       └── eval.py           # HTTP smoke evaluation + gate
 
+├── deploy/
+│   ├── docker-compose.prod.yml  # EC2 stack: Caddy + backend + frontend + Qdrant + Redis
+│   ├── Caddyfile             # HTTPS + routing (/ → UI, /api → backend)
+│   ├── setup-server.sh       # One-time Ubuntu setup: Docker, swap, updates, clone
+│   ├── upload-index.sh       # Copy the local Qdrant collection to the server as a snapshot
+│   └── upload_snapshot.py    # Copy it to Qdrant Cloud instead (prompts for URL + key)
+├── render.yaml               # Render Blueprint for the backend (free plan)
 ├── benchmarks/
 │   ├── load_test.py          # Closed-loop load test: /search, /ask misses and hits
 │   └── cost.py               # Cost per 1,000 questions from recorded token usage

@@ -130,3 +130,23 @@ def test_llm_strips_think_block():
 def test_llm_empty_content_is_a_failure(content):
     result = asyncio.run(LLMService(client=_fake_groq(content)).generate_answer("q", "ctx"))
     assert not result.ok and result.answer == UNAVAILABLE_MESSAGE
+
+
+# ── Managed-service connection settings ───────────────────
+def test_qdrant_url_replaces_host_and_port(monkeypatch):
+    from config.settings import settings
+    monkeypatch.setattr(settings, "QDRANT_URL", "")
+    assert settings.qdrant_client_kwargs() == {"host": settings.QDRANT_HOST, "grpc_port": settings.QDRANT_GRPC_PORT,
+                                               "prefer_grpc": True}
+    monkeypatch.setattr(settings, "QDRANT_URL", "https://abc.cloud.qdrant.io:6333")
+    monkeypatch.setattr(settings, "QDRANT_API_KEY", "k")
+    assert settings.qdrant_client_kwargs() == {"url": "https://abc.cloud.qdrant.io:6333", "api_key": "k",
+                                               "prefer_grpc": True}
+
+
+def test_redis_url_is_used_with_tls(monkeypatch):
+    from config.settings import settings
+    monkeypatch.setattr(settings, "REDIS_URL", "rediss://default:secret@example.upstash.io:6379")
+    kwargs = CacheService(op_timeout=0.1).client.connection_pool.connection_kwargs
+    assert kwargs["host"] == "example.upstash.io" and kwargs["password"] == "secret"
+    assert CacheService(op_timeout=0.1).client.connection_pool.connection_class.__name__ == "SSLConnection"

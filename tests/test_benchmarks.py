@@ -22,3 +22,13 @@ def test_report_counts_only_llm_answers_and_scales_by_hit_rate(tmp_path):
     assert "from 2 uncached answers" in out
     assert "| 0% | $0.135 [$0.135, $0.135] |" in out   # (1000 x 0.075 + 200 x 0.30) / 1e6 x 1000
     assert "| 50% | $0.068 [$0.068, $0.068] |" in out
+
+
+def test_streamlit_cloud_requirements_match_the_frontend_image():
+    from pathlib import Path
+
+    def pins(path):
+        return sorted(line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines()
+                      if line.strip() and not line.startswith("#"))
+
+    assert pins("src/frontend/requirements.txt") == pins("requirements-frontend.txt")

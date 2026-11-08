@@ -1,0 +1,40 @@
+# Render Blueprint: the FastAPI backend as a Docker web service on the free plan.
+# Render > New > Blueprint > this repo. Values marked sync: false are entered in the
+# dashboard (secrets never live in the repo).
+#
+# Free plan: 512 MB RAM, 0.1 CPU, sleeps after 15 min without traffic (the next request
+# waits about a minute). The backend uses about 370 MB with both embedding models loaded.
+services:
+  - type: web
+    name: ecommerce-rag-backend
+    runtime: docker
+    plan: free
+    region: virginia            # near Qdrant Cloud and Upstash in us-east-1
+    branch: master
+    dockerfilePath: ./Dockerfile.backend
+    dockerContext: .
+    healthCheckPath: /readyz
+    autoDeploy: true
+    envVars:
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: API_KEYS
+        generateValue: true     # random key; copy it into the Streamlit app's secrets
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "60"
+      - key: ASK_RATE_LIMIT_PER_MINUTE
+        value: "10"
+      - key: EMBED_THREADS
+        value: "1"              # 0.1 CPU: one ONNX thread per model
+      - key: CACHE_OP_TIMEOUT_SECONDS
+        value: "0.5"            # Redis is across the network, not on localhost
+      - key: QDRANT_TIMEOUT_SECONDS
+        value: "10"
+      - key: FORWARDED_ALLOW_IPS
+        value: "*"              # only Render's proxy reaches the service: trust its X-Forwarded-For
