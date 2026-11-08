@@ -1,23 +1,27 @@
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.18.2
     container_name: qdrant_local
     ports:
       - "6333:6333"
       - "6334:6334"
     volumes:
-      - ./database/qdrant_storage:/qdrant/storage
+      - qdrant_data:/qdrant/storage
+    mem_limit: 1g  # ~250 MB in use with the 43k-product WANDS collection
     restart: unless-stopped
     networks:
       - ecommerce-net
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.9-alpine
     container_name: redis_local
     ports:
       - "6379:6379"
     volumes:
-      - ./database/cache_storage:/data
+      - redis_data:/data
+    # Evict least-recently-used answers at the cap instead of being killed for memory.
+    command: redis-server --maxmemory 200mb --maxmemory-policy allkeys-lru
+    mem_limit: 256m
     restart: unless-stopped
     networks:
       - ecommerce-net
@@ -34,11 +38,24 @@ services:
       - QDRANT_GRPC_PORT=6334
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - COLLECTION_NAME=ecommerce_products
+      - COLLECTION_NAME=wands_products
       - GROQ_API_KEY=${GROQ_API_KEY}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-20b}
+      - CACHE_TTL_SECONDS=${CACHE_TTL_SECONDS:-300}
+      - API_KEYS=${API_KEYS:-}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-0}
+      - ASK_RATE_LIMIT_PER_MINUTE=${ASK_RATE_LIMIT_PER_MINUTE:-0}
     depends_on:
       - qdrant
       - redis
+    mem_limit: 1g  # ~310 MB in use: both embedding models are loaded at startup
+    healthcheck:
+      # /readyz: Qdrant reachable and the collection has points. The image has no curl.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 90s  # model loading (and the first download) happens at startup
     restart: unless-stopped
     networks:
       - ecommerce-net
@@ -52,8 +69,11 @@ services:
       - "8501:8501"
     environment:
       - BACKEND_URL=http://backend:8000
+      - API_KEY=${FRONTEND_API_KEY:-}
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    mem_limit: 512m
     restart: unless-stopped
     networks:
       - ecommerce-net
@@ -61,3 +81,7 @@ services:
 networks:
   ecommerce-net:
     driver: bridge
+
+volumes:
+  qdrant_data:
+  redis_data:

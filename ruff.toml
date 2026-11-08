@@ -1,0 +1,14 @@
+target-version = "py311"
+line-length = 120
+
+[lint]
+# pycodestyle, pyflakes, import order, bugbear, pyupgrade
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+    "B008",  # FastAPI's Depends(...) / Query(...) in argument defaults is the framework's idiom
+    "E501",  # long lines are left to judgement: the LLM prompts are long strings, and re-wrapping
+             # them would change the prompt text and invalidate every cached evaluation call
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["E731"]  # small lambdas as test fakes

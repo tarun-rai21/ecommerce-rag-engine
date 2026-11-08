@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install ruff==0.15.20
+      - run: ruff check --output-format=github .
+
+  test:
+    runs-on: ubuntu-latest
+    env:
+      # Where FastEmbed keeps its ONNX models, so they can be cached between runs.
+      FASTEMBED_CACHE_PATH: ${{ github.workspace }}/.fastembed_cache
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"  # same as the Docker images
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Cache embedding models
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FASTEMBED_CACHE_PATH }}
+          key: fastembed-${{ hashFiles('requirements-backend.txt') }}
+      - name: Download WANDS queries (for the parser test over all 480 real queries)
+        run: |
+          mkdir -p data/wands
+          curl -fsSL -o data/wands/query.csv https://raw.githubusercontent.com/wayfair/WANDS/main/dataset/query.csv
+      - run: pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build backend image
+        run: docker build -f Dockerfile.backend -t ecommerce-rag-backend:ci .
+      - name: Build frontend image
+        run: docker build -f Dockerfile.frontend -t ecommerce-rag-frontend:ci .

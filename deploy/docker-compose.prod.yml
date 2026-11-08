@@ -1,0 +1,96 @@
+# Production stack for a single EC2 instance (t3.small, 2 GB RAM + 2 GB swap).
+#
+#   docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d --build
+#
+# Only Caddy is reachable from the internet (80/443). Qdrant is published on the
+# server's loopback interface only, for loading the index snapshot over SSH.
+# Memory in use is about 0.8 GB; the limits leave room for bursts.
+
+services:
+  caddy:
+    image: caddy:2.10.0
+    container_name: caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:?set DOMAIN in .env, e.g. 13-232-1-2.sslip.io}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data        # TLS certificates; keep them so restarts don't re-issue
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    mem_limit: 128m
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.2
+    container_name: qdrant
+    ports:
+      - "127.0.0.1:6333:6333"  # loopback only: for the snapshot upload, never public
+    volumes:
+      - qdrant_data:/qdrant/storage
+    mem_limit: 1g
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.9-alpine
+    container_name: redis
+    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    mem_limit: 128m
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ..
+      dockerfile: Dockerfile.backend
+    container_name: backend
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_GRPC_PORT=6334
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - COLLECTION_NAME=wands_products
+      - GROQ_API_KEY=${GROQ_API_KEY:?set GROQ_API_KEY in .env}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-20b}
+      - API_KEYS=${API_KEYS:?set API_KEYS in .env}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-60}
+      - ASK_RATE_LIMIT_PER_MINUTE=${ASK_RATE_LIMIT_PER_MINUTE:-10}
+      # Only Caddy can reach the backend (it isn't published), so trusting its
+      # X-Forwarded-For lets rate limits see each caller's IP.
+      - FORWARDED_ALLOW_IPS=*
+    depends_on:
+      - qdrant
+      - redis
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: Dockerfile.frontend
+    container_name: frontend
+    environment:
+      - BACKEND_URL=http://backend:8000
+      - API_KEY=${FRONTEND_API_KEY:?set FRONTEND_API_KEY in .env}
+    depends_on:
+      backend:
+        condition: service_healthy
+    mem_limit: 512m
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
+  qdrant_data:
+  redis_data:

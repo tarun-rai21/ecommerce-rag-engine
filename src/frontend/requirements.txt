@@ -1,0 +1,5 @@
+# Streamlit Community Cloud installs this file (it looks next to app.py first).
+# Keep it identical to requirements-frontend.txt; a test checks that.
+pandas==3.0.3
+requests==2.34.2
+streamlit==1.58.0

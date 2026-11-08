@@ -1,3 +1,4 @@
+import pandas as pd
 import streamlit as st
 
 
@@ -33,7 +34,6 @@ def render_diagnostics(timing: dict, retrieved_products: list[dict]) -> None:
                     timing.get("llm_ms", 0),
                 ],
             }
-            import pandas as pd
             df_chart = pd.DataFrame(chart_data)
             st.bar_chart(df_chart.set_index("Stage"))
 
@@ -43,9 +43,8 @@ def render_diagnostics(timing: dict, retrieved_products: list[dict]) -> None:
         st.subheader("🔍 Retrieved Products (RRF Ranked)")
 
         if not retrieved_products:
-            st.info("Cache hit — retrieved products not re-fetched.")
+            st.info("No products matched this query.")
         else:
-            import pandas as pd
             rows = []
             for rank, product in enumerate(retrieved_products, start=1):
                 rows.append({
@@ -53,7 +52,8 @@ def render_diagnostics(timing: dict, retrieved_products: list[dict]) -> None:
                     "Title": product.get("title", ""),
                     "Category": product.get("category", ""),
                     "Price ($)": product.get("price", 0.0),
+                    "Rating": product.get("rating"),
                     "RRF Score": round(product.get("rrf_score", 0.0), 6),
                 })
             df = pd.DataFrame(rows)
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(df, width="stretch", hide_index=True)

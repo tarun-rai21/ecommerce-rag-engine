@@ -1,0 +1,19 @@
+# Keep the build context small and secrets out of images.
+.git
+.github
+.env
+.cache
+.fastembed_cache
+.idea
+.vscode
+venv
+.venv
+data/wands
+reports
+tests
+benchmarks
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+PRODUCTION_ROADMAP.md
