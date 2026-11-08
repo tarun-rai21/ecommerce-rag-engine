@@ -52,7 +52,7 @@ class RerankerService:
             scores = await asyncio.wait_for(
                 asyncio.to_thread(self._score, query, texts), timeout=self.timeout_seconds
             )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             logger.warning(f"Rerank exceeded {self.timeout_seconds:.1f}s; keeping RRF order.")
             return RerankOutcome(results, reranked=False)
         except Exception as e:

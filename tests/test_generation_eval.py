@@ -5,11 +5,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.backend.services.llm import REFUSAL_MESSAGE, build_messages, clean_output
 from src.backend.api.v1.endpoints import build_context
-from src.evaluation.generation_eval import compare, calibrate, cohen_kappa, export_labels, spearman, summarize
+from src.backend.services.llm import REFUSAL_MESSAGE, build_messages, clean_output
+from src.evaluation.generation_eval import calibrate, cohen_kappa, compare, export_labels, spearman, summarize
 from src.evaluation.judge import (
-    CachedLLM, dollar_amounts, is_refusal, mentions_context, overclaims_catalog, parse_judgment, ungrounded_prices,
+    CachedLLM,
+    dollar_amounts,
+    is_refusal,
+    mentions_context,
+    overclaims_catalog,
+    parse_judgment,
+    ungrounded_prices,
 )
 
 

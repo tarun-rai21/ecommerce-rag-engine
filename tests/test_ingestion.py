@@ -2,11 +2,11 @@ import uuid
 
 import pytest
 from qdrant_client import QdrantClient
-from qdrant_client.models import Modifier, SparseVectorParams, VectorParams, Distance
+from qdrant_client.models import Distance, Modifier, SparseVectorParams, VectorParams
 
 from src.ingestion.ingest import (
-    CollectionConfigError,
     SPARSE_VECTOR_NAME,
+    CollectionConfigError,
     ensure_collection,
     ingest_records,
 )

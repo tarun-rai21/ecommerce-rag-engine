@@ -1,7 +1,9 @@
 import re
 import uuid
+from collections.abc import Mapping
+from typing import Any
+
 from pydantic import BaseModel, Field, field_validator
-from typing import Any, Mapping
 
 # Fixed namespace so the same product_id always maps to the same Qdrant point id.
 _POINT_ID_NAMESPACE = uuid.UUID("6f1c2b1e-7a43-4c4e-9a52-1f0d3b6e8c21")

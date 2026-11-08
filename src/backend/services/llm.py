@@ -1,14 +1,15 @@
 import asyncio
 import re
 from dataclasses import dataclass
+
+from groq import APIConnectionError, Groq, RateLimitError
 from loguru import logger
 from tenacity import (
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
-from groq import Groq, RateLimitError, APIConnectionError
 
 from config.settings import settings
 

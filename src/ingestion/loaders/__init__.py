@@ -1,7 +1,7 @@
 """Dataset loaders: each returns an iterator of raw product dicts in ProductRecord shape."""
 import json
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable, Iterator
 
 from src.ingestion.loaders.wands import iter_wands_products
 
@@ -10,7 +10,7 @@ SAMPLE_PATH = REPO_ROOT / "data" / "raw" / "sample_products.json"
 
 
 def iter_sample_products(path: Path = SAMPLE_PATH, limit: int | None = None) -> Iterator[dict]:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         records = json.load(f)
     yield from records[:limit] if limit else records
 

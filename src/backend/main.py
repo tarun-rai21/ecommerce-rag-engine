@@ -1,14 +1,15 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from loguru import logger
 
+from config.settings import settings
 from src.backend.api.middleware import RequestTimingMiddleware
 from src.backend.api.v1.router import router as v1_router
-from config.settings import settings
-from src.backend.services.rerank import RerankerService
-from src.backend.services.search import ProductSearchService
 from src.backend.services.cache import CacheService
 from src.backend.services.llm import LLMService
+from src.backend.services.rerank import RerankerService
+from src.backend.services.search import ProductSearchService
 
 
 @asynccontextmanager

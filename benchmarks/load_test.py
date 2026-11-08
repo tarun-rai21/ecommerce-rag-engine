@@ -173,8 +173,12 @@ def miss_summary(rows: list[dict]) -> list[str]:
             other[r["source"] or r["status"]] = other.get(r["source"] or r["status"], 0) + 1
     if not llm:
         return [f"No successful LLM answers ({other})."]
-    med = lambda xs: float(np.median(xs))
-    t = lambda k: [r["timing"][k] for r in llm]
+    def med(xs):
+        return float(np.median(xs))
+
+    def t(key):
+        return [r["timing"][key] for r in llm]
+
     usage = [r["usage"] for r in llm if r["usage"]]
     lines = [f"{len(llm)} of {len(rows)} requests answered by the LLM" + (f"; others: {other}" if other else "") + ".", "",
              "| Stage | Median ms | Max ms |", "|---|---|---|"]

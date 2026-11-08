@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.backend.services.cache import CacheService
-from src.backend.services.llm import LLMService, UNAVAILABLE_MESSAGE
+from src.backend.services.llm import UNAVAILABLE_MESSAGE, LLMService
 from src.evaluation import metrics as m
 
 

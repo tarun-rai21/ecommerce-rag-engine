@@ -1,16 +1,17 @@
 import asyncio
 from typing import Literal
+
 from loguru import logger
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
-    SparseVector,
-    Prefetch,
-    RrfQuery,
-    Rrf,
     FieldCondition,
     Filter,
     MatchAny,
+    Prefetch,
     Range,
+    Rrf,
+    RrfQuery,
+    SparseVector,
 )
 
 from config.settings import settings

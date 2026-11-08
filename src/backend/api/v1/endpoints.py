@@ -6,20 +6,20 @@ from loguru import logger
 from pydantic import ValidationError
 
 from src.backend.models.api_schemas import (
-    SearchQueryRequest,
-    ProductSearchResult,
-    SearchResponseEnvelope,
-    RetrievedProduct,
-    TimingBreakdown,
-    TokenUsage,
     AskResponseEnvelope,
     FacetResponse,
     FacetValue,
+    ProductSearchResult,
+    RetrievedProduct,
+    SearchQueryRequest,
+    SearchResponseEnvelope,
+    TimingBreakdown,
+    TokenUsage,
 )
-from src.backend.services.search import ProductSearchService
 from src.backend.services.cache import CacheService
-from src.backend.services.llm import LLMService, REFUSAL_MESSAGE
+from src.backend.services.llm import REFUSAL_MESSAGE, LLMService
 from src.backend.services.query_parser import ParsedQuery, SearchFilters, parse_query
+from src.backend.services.search import ProductSearchService
 from src.ingestion.schemas import size_token
 
 router = APIRouter()

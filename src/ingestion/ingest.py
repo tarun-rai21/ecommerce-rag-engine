@@ -1,10 +1,10 @@
 import argparse
 import json
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import Iterable
 
 from loguru import logger
 from pydantic import ValidationError
@@ -13,11 +13,11 @@ from qdrant_client.models import (
     Distance,
     Modifier,
     PayloadSchemaType,
-    VectorParams,
-    SparseVectorParams,
-    SparseIndexParams,
     PointStruct,
+    SparseIndexParams,
     SparseVector,
+    SparseVectorParams,
+    VectorParams,
 )
 
 from config.settings import settings
@@ -180,7 +180,7 @@ def embed_with_cache(
     if missing:
         new_dense, new_sparse = embedder.embed_documents(missing)
         cache.put_many(missing, new_dense, new_sparse)
-        for t, d, s in zip(missing, new_dense, new_sparse):
+        for t, d, s in zip(missing, new_dense, new_sparse, strict=True):
             cached[text_key(t)] = (d, s)
     vectors = [cached[text_key(t)] for t in texts]
     return [v[0] for v in vectors], [v[1] for v in vectors], len(missing)

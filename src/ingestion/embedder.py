@@ -1,5 +1,6 @@
-from fastembed import TextEmbedding, SparseTextEmbedding
 from typing import Any
+
+from fastembed import SparseTextEmbedding, TextEmbedding
 
 DENSE_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 SPARSE_MODEL_NAME = "Qdrant/bm25"

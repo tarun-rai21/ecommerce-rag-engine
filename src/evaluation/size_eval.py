@@ -43,7 +43,7 @@ def queries() -> list[tuple[str, str]]:
 def load_size_tokens(data_dir: Path = DEFAULT_DIR) -> dict[str, set[str]]:
     df = pd.read_csv(data_dir / "product.csv", sep="\t", encoding="utf-8", usecols=["product_id", "product_features"])
     return {str(pid): {size_token(s) for s in parse_sizes(raw if isinstance(raw, str) else None)}
-            for pid, raw in zip(df.product_id, df.product_features)}
+            for pid, raw in zip(df.product_id, df.product_features, strict=True)}
 
 
 def _mentions(result: dict, words: list[str]) -> bool:

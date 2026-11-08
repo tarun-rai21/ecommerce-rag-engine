@@ -36,4 +36,4 @@ def paired_difference(a: list[float], b: list[float], **kw) -> Estimate:
     """CI of mean(a - b) over the same queries. Excludes 0 → difference is significant."""
     if len(a) != len(b):
         raise ValueError("paired samples must have equal length")
-    return bootstrap_mean([x - y for x, y in zip(a, b)], **kw)
+    return bootstrap_mean([x - y for x, y in zip(a, b, strict=True)], **kw)

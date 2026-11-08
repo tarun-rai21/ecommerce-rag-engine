@@ -5,7 +5,7 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 
 from src.backend.main import app
 from src.backend.services.cache import CacheService
-from src.backend.services.llm import LLMResult, UNAVAILABLE_MESSAGE
+from src.backend.services.llm import UNAVAILABLE_MESSAGE, LLMResult
 
 
 class FakeSearch:

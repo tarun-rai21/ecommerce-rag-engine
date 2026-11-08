@@ -1,5 +1,7 @@
 # E-Commerce Semantic Search & RAG Pipeline
 
+[![CI](https://github.com/tarun-rai21/ecommerce-rag-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/tarun-rai21/ecommerce-rag-engine/actions/workflows/ci.yml)
+
 A production-grade hybrid search and Retrieval-Augmented Generation (RAG) engine for e-commerce product discovery. Built with FastAPI, Qdrant, FastEmbed, Groq LLM, Redis, and Streamlit — fully containerized with Docker Compose.
 
 ---
@@ -211,7 +213,9 @@ Ingestion validates every record, creates payload indexes on `category`, `produc
 pip install -r requirements-dev.txt
 pytest
 ```
-The suite uses Qdrant's local mode and the real embedding models, so it does not need Docker.
+The suite uses Qdrant's local mode and the real embedding models, so it does not need Docker. Lint with `ruff check .`.
+
+**CI** (`.github/workflows/ci.yml`) runs on every push and on pull requests to `master`: ruff, the full test suite on Python 3.11 (with the embedding models and pip packages cached between runs), and a build of both Docker images. It needs no secrets, because the tests replace the LLM with fakes.
 
 ### 5. Access the application
 - **Frontend UI**: http://localhost:8501

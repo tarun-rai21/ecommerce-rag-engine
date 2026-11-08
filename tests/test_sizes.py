@@ -1,11 +1,11 @@
 """Product sizes: parsing the catalog's messy values, search text, query form, LLM context."""
 import pytest
 
-from src.evaluation.judge import overclaims_catalog
 from src.backend.api.v1.endpoints import build_context
 from src.backend.services.llm import SYSTEM_PROMPT
 from src.backend.services.query_parser import parse_query
 from src.backend.services.search import size_first
+from src.evaluation.judge import overclaims_catalog
 from src.ingestion.loaders.wands import parse_dimensions, parse_rug_size, parse_sizes
 from src.ingestion.schemas import build_search_text, size_token
 

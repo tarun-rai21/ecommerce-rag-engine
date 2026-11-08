@@ -51,7 +51,14 @@ from src.backend.services.search import ProductSearchService
 from src.evaluation.datasets import load_wands_queries
 from src.evaluation.filter_eval import budget_for, fetch_prices
 from src.evaluation.judge import (
-    JUDGE_MODEL, CachedLLM, is_refusal, judge_messages, mentions_context, overclaims_catalog, parse_judgment, relevance_messages,
+    JUDGE_MODEL,
+    CachedLLM,
+    is_refusal,
+    judge_messages,
+    mentions_context,
+    overclaims_catalog,
+    parse_judgment,
+    relevance_messages,
     ungrounded_prices,
 )
 from src.evaluation.retrieval_eval import MemoEmbedder, _git_sha
@@ -261,7 +268,7 @@ def export_labels(rows: list[dict], path: Path, n: int = 30) -> None:
 def cohen_kappa(a: list[int], b: list[int]) -> float:
     n = len(a)
     labels = set(a) | set(b)
-    po = sum(x == y for x, y in zip(a, b)) / n
+    po = sum(x == y for x, y in zip(a, b, strict=True)) / n
     pe = sum((a.count(k) / n) * (b.count(k) / n) for k in labels)
     return 1.0 if pe == 1 else (po - pe) / (1 - pe)
 
@@ -288,16 +295,18 @@ def spearman(a: list[float], b: list[float]) -> float:
 def calibrate(rows: list[dict], path: Path) -> str:
     by_id = {r["item_id"]: r for r in rows}
     with path.open(encoding="utf-8-sig", newline="") as fh:
-        labels = [l for l in csv.DictReader(fh) if l["reviewer_fully_faithful"].strip() and l["reviewer_relevance"].strip()]
-    pairs = [(l, by_id[l["item_id"]]) for l in labels if l["item_id"] in by_id and by_id[l["item_id"]]["fully_faithful"] is not None]
+        labels = [row for row in csv.DictReader(fh)
+                  if row["reviewer_fully_faithful"].strip() and row["reviewer_relevance"].strip()]
+    pairs = [(lab, by_id[lab["item_id"]]) for lab in labels
+             if lab["item_id"] in by_id and by_id[lab["item_id"]]["fully_faithful"] is not None]
     if not pairs:
         return "No labelled items to compare."
-    hf = [int(l["reviewer_fully_faithful"]) for l, _ in pairs]
+    hf = [int(lab["reviewer_fully_faithful"]) for lab, _ in pairs]
     jf = [int(r["fully_faithful"]) for _, r in pairs]
-    rel = [(int(l["reviewer_relevance"]), r["relevance"]) for l, r in pairs if r["relevance"] is not None]
+    rel = [(int(lab["reviewer_relevance"]), r["relevance"]) for lab, r in pairs if r["relevance"] is not None]
     lines = [
         f"Judge calibration on {len(pairs)} independently labelled answers:",
-        f"- Fully faithful (yes/no): agreement {sum(x == y for x, y in zip(hf, jf)) / len(pairs):.0%}, "
+        f"- Fully faithful (yes/no): agreement {sum(x == y for x, y in zip(hf, jf, strict=True)) / len(pairs):.0%}, "
         f"Cohen's kappa {cohen_kappa(hf, jf):.2f}; reviewer 'yes' rate {sum(hf) / len(hf):.0%}, judge {sum(jf) / len(jf):.0%}",
         f"- Relevance (1-5): exact agreement {sum(h == j for h, j in rel) / len(rel):.0%}, "
         f"within 1 point {sum(abs(h - j) <= 1 for h, j in rel) / len(rel):.0%}, "
