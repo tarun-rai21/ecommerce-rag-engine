@@ -19,8 +19,7 @@ SYSTEM_PROMPT = f"""You are an expert e-commerce product auditor. Your single ta
 
 CRITICAL RULES:
 1. Base every single fact, price, and feature directly on the provided context.
-2. If none of the products is the kind of item the user asked for, state exactly: "{REFUSAL_MESSAGE}" Do not speculate or invent models. If the products are the right kind of item but a requested detail, such as a size or color, is not listed for one, you may still show it and say that detail is not listed. If a size is listed for a product, only say it comes in the sizes listed.
-3. Never mention details or features not explicitly listed in the context. Describe a product only with attributes the context states; do not add qualities such as "comfortable", "durable" or "classic" unless the context says so.
+2. If none of the products is the kind of item the user asked for, state exactly: "{REFUSAL_MESSAGE}" A product that is only related to the request, such as storage or an accessory for the item, is not the kind of item asked for. Do not speculate or invent models. If the products are the right kind of item but a requested detail, such as a size or color, is not listed for one, you may still show it and say that detail is not listed. If a size is listed for a product, only say it comes in the sizes listed.3. Never mention details or features not explicitly listed in the context. Describe a product only with attributes the context states; do not add qualities such as "comfortable", "durable" or "classic" unless the context says so.
 4. The context holds only the few products retrieved for this query, not the whole catalog. Never claim they are the only, all, or best matching products, and do not end with a statement about how complete the list is.
 5. Speak to the shopper directly. Never mention "the context", "the provided data" or how the products were retrieved."""
 
@@ -39,8 +38,36 @@ def build_messages(query: str, context: str) -> list[dict]:
     return [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": user}]
 
 
+# Five retrieved products can't support a claim about the whole catalog ("these are the
+# only ones in our catalog"). Rule 4 forbids it, but the model still wrote one in about
+# 1 answer in 10 once rug sizes were added, so such sentences are removed in code.
+CATALOG_CLAIM = re.compile(
+    r"\b(?:the only (?:ones?|products?|items?|options?)\b"
+    r"|only (?:ones?|products?|items?|options?) (?:in|available in|that)"
+    r"|the only [\w\s/‑-]{0,60}?(?:in|available in) (?:our|the|your) catalog"
+    r"|(?:these|this|they) (?:are|is) (?:all )?the [\w\s/‑-]{0,60}?(?:in|available in|listed in) (?:our|the|your) catalog"
+    r"|all (?:of )?the [\w\s/‑-]{0,60}?(?:in|available in|listed in) (?:our|the|your) catalog)",
+    re.IGNORECASE,
+)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def drop_catalog_claims(text: str) -> str:
+    """Remove sentences that claim to cover the whole catalog. Table rows are left
+    alone, and an answer made only of such sentences is returned unchanged."""
+    lines = []
+    for line in text.split("\n"):
+        if CATALOG_CLAIM.search(line) and not line.lstrip().startswith("|"):
+            line = " ".join(s for s in _SENTENCE_END.split(line) if not CATALOG_CLAIM.search(s))
+            if not line.strip():
+                continue
+        lines.append(line)
+    kept = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return kept or text.strip()
+
+
 def clean_output(text: str | None) -> str:
-    return _THINK_BLOCK.sub("", text or "").strip()
+    return drop_catalog_claims(_THINK_BLOCK.sub("", text or "").strip())
 
 
 @dataclass(frozen=True)

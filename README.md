@@ -338,22 +338,24 @@ python -m src.evaluation.generation_eval --calibrate src/evaluation/judge_labels
 
 | Metric | Result |
 |---|---|
-| Correct refusal, out-of-catalog | 96.7% [90.0%, 100%] (29/30) |
+| Correct refusal, out-of-catalog | 100% (30/30) |
 | Refusal on in-catalog queries | 14.3% [7.1%, 22.9%] (10/70) |
 | ...when an Exact product was among the 5 retrieved | 3.7% [0.0%, 9.3%] (2/54) |
 | Refusal on rug queries with a room size | 0% (0/10) |
-| Claims the judge found supported | 99.1% [98.5%, 99.7%] (1,679 of 1,694) |
-| Answers with every claim supported (judge) | 87.3% [78.9%, 94.4%]; see calibration below |
-| Relevance (judge, 1-5) | 4.86 [4.77, 4.93] |
-| Answers quoting a price not in the context | 0% (0/71) |
-| Answers claiming to cover the whole catalog | 1.4% (1/71) |
+| Claims the judge found supported | 99.0% [98.3%, 99.6%] (1,687 of 1,701) |
+| Answers with every claim supported (judge) | 84.3% [75.7%, 92.9%]; see calibration below |
+| Relevance (judge, 1-5) | 4.79 [4.69, 4.87] |
+| Answers quoting a price not in the context | 0% (0/70) |
+| Answers where a whole-catalog claim was removed in code | 14.3% (10/70) |
 
-**Softening the refusal rule had a mixed effect.** Sizes were added to the model's context, and the rule changed: it now refuses only when no product is the kind of item requested, and may show a product whose requested detail isn't listed. Compared with the previous version on the same 100 queries:
+**Room-size queries took four rounds.** The final version differs from the first in four ways:
 
-- Room-size queries now get answers. "grey area rug 8x10" was refused before.
-- General in-catalog refusals barely moved, from 11 to 10 of 70, with one answer changing.
-- Out-of-catalog refusals slipped from 30/30 to 29/30: "men's running shoes size 10" now returns shoe racks, with a claim that they fit that shoe. The judge flagged it.
-- Answers with every claim supported went from 50 to 52 of the 59 queries answered in both runs (4 got worse, 6 got better), so there's no sign of more unsupported claims.
+1. **Softer refusal rule.** The model refuses only when no product is the kind of item requested, and may show a product whose requested detail isn't listed. "grey area rug 8x10" was refused before. This let one out-of-catalog query through ("men's running shoes size 10" returned shoe racks), so the rule now adds that a merely related product, such as storage or an accessory, isn't the item asked for. That only partly works: the evaluation's one answer to the shoe query was a refusal, but repeating the identical request 5 times gave 1 refusal and 4 shoe-rack answers.
+2. **Sizes in the context.** The model sees each rug's sizes, but it still named only 22 of the 31 retrieved rugs that fit. All 9 it left out had near sizes, such as 7' 10" × 10' 2" for an 8x10. A rule in the system prompt didn't help (21/31).
+3. **A line naming the rugs that fit.** The context now opens by listing the products sold at or close to the requested size, with their sizes. The model then named 30 of 31 (a rough title match on the answers), and "grey area rug 8x10" shows all three grey rugs that fit instead of one. A side effect: answers began calling the list "the only ones in our catalog".
+4. **Whole-catalog claims removed in code.** The prompt already forbade those claims and a warning in the context didn't stop them, so `clean_output` now deletes any sentence that claims the products cover the whole catalog, before the answer is shown or judged. It removed one from 10 of 70 answers here. It works on wording, so a paraphrase can still slip through: the judge flagged one ("these are the ones that match").
+
+Against the version before these changes, on the same queries: out-of-catalog refusals 29 → 30 of 30 (but see the shoe query above), in-catalog refusals unchanged at 10 of 70, and answers with every claim supported 62 → 59 of 70, a change of −4.3 points [−15.7, +7.1] that isn't significant. On the 10 rug queries, 6 answers are fully supported against 9 before. Answers there now list 3 to 5 rugs each, and the unsupported claims are mostly pile heights stated for the wrong rug. These steps were tuned on the same 10 rug queries they're measured on, so treat the rug numbers as development results.
 
 **Prompt iteration.** The first version told shoppers "these are the only products in our catalog" in 25% of answers (15/59), although the model sees 5 products. Two prompt revisions brought this to 1.7%, a paired change of −22 points [−36, −10], with no significant change in supported claims (−0.2 points [−1.0, +0.8]). Answers grew about 20% longer. The same queries were used to develop the prompt and report these results, and the WANDS queries all come from the dev split, so treat them as development numbers rather than a held-out estimate.
 
@@ -366,7 +368,7 @@ python -m src.evaluation.generation_eval --calibrate src/evaluation/judge_labels
 | Relevance | 87% exact, 100% within 1 point |
 | Disagreements on support | 7, all where the reviewer found a problem the judge passed |
 
-Read the 87.3% above as an upper estimate. The misses are mostly small embellishments ("classic design", a product name read as a material). Limits: the reviewer is an AI, it had already seen the judge's flagged claims for this run, so agreement may be inflated, it marked an answer down for a single unsupported word, and 30 answers is a small sample. A human review is still needed before calling the judge human-validated.
+Read the 84.3% above as an upper estimate. The misses are mostly small embellishments ("classic design", a product name read as a material). Limits: the reviewer is an AI, it had already seen the judge's flagged claims for this run, so agreement may be inflated, it marked an answer down for a single unsupported word, and 30 answers is a small sample. A human review is still needed before calling the judge human-validated.
 
 Every LLM call is cached by its full request in `.cache/llm_calls.sqlite`, so an unchanged re-run is free. A cold run takes about 2 hours on Groq's free tier, and longer when its rate limits force long waits.
 
@@ -526,8 +528,9 @@ ecommerce-rag-engine/
 - **Synthetic prices**: WANDS has no prices; the ones shown are generated and must not be read as real.
 - **Answer quality has no human validation yet**: the judge was calibrated against an AI reviewer that wasn't fully blind, on 30 answers. It also misses subtle embellishments, so its faithfulness scores are upper estimates.
 - **No reranker**: cross-encoder reranking was evaluated and left off (gain not significant on dev, about +0.7–1.0 s per query on CPU); see above.
-- **Answers leave out near-size rugs**: on the 10 room-size queries, the model named about 22 of the 31 retrieved products marked as matching (a rough title match on the answers). All 9 it missed have near sizes, such as 7' 10" × 10' 2" for an 8x10, so "grey area rug 8x10" shows one rug when three fit.
-- **One out-of-catalog query is answered**: "men's running shoes size 10" returns shoe racks instead of a refusal.
+- **One answer per query**: the evaluation stores a single answer per query, and the generator runs at temperature 0.2, so the same request can be refused one time and answered the next. Refusal rates carry more uncertainty than their intervals show. "men's running shoes size 10" is refused only about 1 time in 5, with shoe racks offered otherwise.
+- **Whole-catalog claims are removed by pattern**: the model still writes "these are the only ones in our catalog" in about 1 answer in 7. Code removes the sentences it recognises, but a paraphrase can get through.
+- **Rug answers make more unsupported claims**: answers to room-size queries list more rugs, and 4 of 10 had a claim the judge couldn't support, mostly a pile height stated for the wrong rug.
 - **Only about 40% of rugs list a size**, so size is a ranking preference rather than a guarantee.
 - **Constraint parsing covers price, rating and rug room sizes only**, in English patterns. Categories aren't inferred from text (by design), and other attributes ("walnut") are left to ranking rather than enforced as filters.
 - **Incomplete judgments**: about 20% of top-10 results have no WANDS judgment and count as irrelevant, so absolute scores are pessimistic.

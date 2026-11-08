@@ -78,6 +78,16 @@ def build_context(results: list[dict], filters: SearchFilters | None = None, pre
         # Products were retrieved under these hard filters; telling the model avoids
         # refusals like "I can't confirm these are under $300".
         lines.append(f"(All products below already satisfy the shopper's filters: {describe_filters(filters)}.)")
+    sold_in_size = [
+        f"{r.get('title', '')} ({', '.join(s for s in r['sizes'] if size_token(s) == prefer_size)})"
+        for r in results if any(size_token(s) == prefer_size for s in r.get("sizes") or [])
+    ]
+    if sold_in_size:
+        # A rule in the system prompt didn't stop the model dropping near sizes such as
+        # 7' 10" x 10' 2"; naming the products here is more direct.
+        lines.append(f"(The shopper asked for {prefer_size}. Sold at or close to that size: {'; '.join(sold_in_size)}. "
+                     "Show all of these, each with the size given here. The catalog may hold others, "
+                     "so never call these the only ones.)")
     for r in results:
         fields = [
             f"Title: {r.get('title', '')}",

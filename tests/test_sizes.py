@@ -1,6 +1,7 @@
 """Product sizes: parsing the catalog's messy values, search text, query form, LLM context."""
 import pytest
 
+from src.evaluation.judge import overclaims_catalog
 from src.backend.api.v1.endpoints import build_context
 from src.backend.services.llm import SYSTEM_PROMPT
 from src.backend.services.query_parser import parse_query
@@ -100,3 +101,30 @@ def test_context_flags_sizes_matching_the_request():
     assert "Matches the requested 8x10 size: 7' 10\" x 10' 2\"" in build_context([rug], prefer_size="8x10")
     assert "Matches the requested" not in build_context([rug], prefer_size="9x12")
     assert "Matches the requested" not in build_context([rug])
+
+
+def test_context_opens_by_naming_the_products_sold_in_the_size():
+    near = {"title": "lorenzo", "price": 1.0, "description": "d", "sizes": ["5' x 8'", "7' 10\" x 10' 2\""]}
+    other = {"title": "estrel", "price": 1.0, "description": "d", "sizes": ["5' x 8'"]}
+    first_line = build_context([near, other], prefer_size="8x10").split("\n")[0]
+    assert "Sold at or close to that size: lorenzo (7' 10\" x 10' 2\")." in first_line
+    assert "estrel" not in first_line
+    assert "Sold at or close" not in build_context([other], prefer_size="8x10")
+    assert "Sold at or close" not in build_context([near])
+
+
+def test_size_line_warns_the_list_is_not_the_whole_catalog():
+    rug = {"title": "t", "price": 1.0, "description": "d", "sizes": ["8' x 10'"]}
+    assert "never call these the only ones" in build_context([rug], prefer_size="8x10")
+
+
+def test_overclaim_check_catches_descriptive_wording():
+    assert overclaims_catalog("These are the only grey area rugs in our catalog that match.")
+    assert overclaims_catalog("These are the only shag rugs in the catalog that match the size.")
+    assert overclaims_catalog("This is the only product in our catalog that matches.")
+    assert not overclaims_catalog("The only difference between these rugs is the pile height.")
+    assert not overclaims_catalog("It comes in the only size listed, 8' x 10'.")
+
+
+def test_prompt_refuses_items_that_are_only_related_to_the_request():
+    assert "only related to the request" in SYSTEM_PROMPT

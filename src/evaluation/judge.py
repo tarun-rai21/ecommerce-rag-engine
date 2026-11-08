@@ -20,7 +20,7 @@ from pathlib import Path
 from groq import APIConnectionError, Groq, InternalServerError, RateLimitError
 from loguru import logger
 
-from src.backend.services.llm import REFUSAL_MESSAGE
+from src.backend.services.llm import CATALOG_CLAIM, REFUSAL_MESSAGE
 
 DEFAULT_CACHE = Path(__file__).resolve().parents[2] / ".cache" / "llm_calls.sqlite"
 JUDGE_MODEL = "qwen/qwen3.8-27b"
@@ -113,15 +113,11 @@ def is_refusal(answer: str) -> bool:
     return _REFUSAL_CORE in norm or REFUSAL_MESSAGE.lower() in norm
 
 
-_CATALOG_OVERCLAIM = re.compile(
-    r"\b(?:the only (?:ones?|products?|items?|options?)\b|only (?:ones?|products?|items?|options?) (?:in|available in|that)"
-    r"|all (?:of )?the [\w\s‑-]{0,40}(?:in|available in) (?:our|the) catalog)", re.IGNORECASE)
-
-
 def overclaims_catalog(answer: str) -> bool:
     """Claims about the whole catalog ("these are the only ones…") that 5 retrieved
-    products can't support."""
-    return bool(_CATALOG_OVERCLAIM.search(answer))
+    products can't support. Same pattern production uses to remove them, so on
+    final answers this counts only claims inside table rows."""
+    return bool(CATALOG_CLAIM.search(answer))
 
 
 _CONTEXT_LEAK = re.compile(r"\b(?:the|provided|given|supplied) (?:product )?(?:context|data)\b", re.IGNORECASE)

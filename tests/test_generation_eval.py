@@ -64,6 +64,18 @@ def test_overclaims_catalog(text, expected):
     assert overclaims_catalog(text) is expected
 
 
+def test_clean_output_removes_whole_catalog_claims():
+    answer = ("**Brandt rug**\n- Size: 5' x 8'\n- Price: $361.99\n\n"
+              "It suits a living room. This rug is the only product in the catalog that matches the 5 x 8 size.")
+    assert clean_output(answer) == "**Brandt rug**\n- Size: 5' x 8'\n- Price: $361.99\n\nIt suits a living room."
+    alone = "Here are three rugs.\n\nThese are the shag rugs in your catalog that match the 8 x 10 size."
+    assert clean_output(alone) == "Here are three rugs."
+    table = "| Rug | Note |\n|---|---|\n| a | the only one in the catalog |"
+    assert clean_output(table) == table
+    assert clean_output(REFUSAL_MESSAGE) == REFUSAL_MESSAGE
+    assert clean_output("These are the only ones.") == "These are the only ones."
+
+
 def test_dollar_amounts():
     assert dollar_amounts("$1,299.99 or $ 45 and $3.5") == [1299.99, 45.0, 3.5]
 

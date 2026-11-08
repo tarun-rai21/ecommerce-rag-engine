@@ -109,8 +109,10 @@ async def evaluate_item(item: dict, service: ProductSearchService, llm: CachedLL
         return row
 
     context = build_context(results, resolved.filters, resolved.size)
-    answer = clean_output(llm.complete(settings.LLM_MODEL, build_messages(item["query"], context), **generator_params()))
+    raw = llm.complete(settings.LLM_MODEL, build_messages(item["query"], context), **generator_params())
+    answer = clean_output(raw)
     row.update(context=context, answer=answer, refused=is_refusal(answer),
+               catalog_claim_removed=overclaims_catalog(raw) and not is_refusal(answer),
                ungrounded_prices=ungrounded_prices(answer, context))
 
     if row["refused"]:
@@ -181,6 +183,7 @@ def summarize(rows: list[dict]) -> dict:
             "answers_with_ungrounded_price": _rate([bool(r["ungrounded_prices"]) for r in answered]),
         },
         "catalog_overclaim": _rate([overclaims_catalog(r["answer"]) for r in answered]),
+        "catalog_claim_removed": _rate([bool(r.get("catalog_claim_removed")) for r in answered]),
         "mentions_context": _rate([mentions_context(r["answer"]) for r in answered]),
         "judge_parse_errors": sum(r["judge_error"] is not None for r in rows),
     }
@@ -208,7 +211,8 @@ def to_markdown(s: dict) -> str:
         f"| Fully faithful answers (every claim supported) | {pct(f['fully_faithful_rate'])} |",
         f"| Answer relevance (1-5, in-catalog) | {num(s['relevance']['mean'])} |",
         f"| Answers quoting a price not in the context | {pct(s['prices']['answers_with_ungrounded_price'])} |",
-        f"| Answers claiming to cover the whole catalog (\"the only ones\") | {pct(s['catalog_overclaim'])} |",
+        f"| Answers with a whole-catalog claim (\"the only ones\") removed in code | {pct(s['catalog_claim_removed'])} |",
+        f"| Answers still claiming to cover the whole catalog (pattern check) | {pct(s['catalog_overclaim'])} |",
         f"| Answers mentioning \"the context\" to the shopper | {pct(s['mentions_context'])} |",
         "",
         f"- Claims checked: {f['claims_total']}, unsupported: {f['claims_unsupported']}. "
