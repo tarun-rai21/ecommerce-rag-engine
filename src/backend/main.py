@@ -12,6 +12,7 @@ from src.backend.api.v1.router import router as v1_router
 from src.backend.logging_config import configure_logging
 from src.backend.metrics import router as metrics_router
 from src.backend.services.cache import CacheService
+from src.backend.services.feedback import FeedbackStore
 from src.backend.services.llm import LLMService
 from src.backend.services.rerank import RerankerService
 from src.backend.services.search import ProductSearchService
@@ -37,6 +38,7 @@ async def lifespan(app: FastAPI):
     if (await app.state.cache_service.ping())[0]:
         logger.info("Redis reachable.")
     app.state.llm_service = LLMService()
+    app.state.feedback_store = FeedbackStore(app.state.cache_service.client)
     yield
     logger.info("Shutting down.")
     await app.state.search_service.close()

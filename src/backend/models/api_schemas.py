@@ -84,6 +84,16 @@ class AskResponseEnvelope(BaseModel):
     usage: TokenUsage | None = None
 
 
+class FeedbackRequest(BaseModel):
+    request_id: str = Field(..., pattern=r"^[A-Za-z0-9._-]{1,64}$")  # X-Request-ID of the answer
+    rating: Literal["up", "down"]
+    comment: str | None = Field(default=None, max_length=500)
+
+
+class FeedbackResponse(BaseModel):
+    status: Literal["recorded"] = "recorded"
+
+
 class FacetValue(BaseModel):
     value: str
     count: int

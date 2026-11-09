@@ -36,7 +36,7 @@ def test_readyz_reports_each_dependency(make_client):
     r = make_client(redis=FakeRedis(fail=True)).get("/readyz")
     body = r.json()
     assert r.status_code == 200 and body["status"] == "ready"  # Redis is optional
-    assert body["checks"]["qdrant"] == {"ok": True, "points": 42}
+    assert body["checks"]["qdrant"] == {"ok": True, "points": 42, "collection": "test_products_v1"}
     assert body["checks"]["cache"] == {"ok": False, "error": "ConnectionError"}
 
 

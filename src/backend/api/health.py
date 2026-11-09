@@ -28,7 +28,7 @@ async def readyz(request: Request) -> JSONResponse:
     search, cache = request.app.state.search_service, request.app.state.cache_service
     try:
         points = await search.ready()
-        qdrant = {"ok": points > 0, "points": points}
+        qdrant = {"ok": points > 0, "points": points, "collection": await search.active_collection()}
     except Exception as e:
         qdrant = {"ok": False, "error": type(e).__name__}
     checks = {

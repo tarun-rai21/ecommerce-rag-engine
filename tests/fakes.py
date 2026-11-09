@@ -25,6 +25,9 @@ class FakeSearch:
     async def ready(self):
         return 42
 
+    async def active_collection(self):
+        return "test_products_v1"
+
 
 class FakeRedis:
     def __init__(self, fail: bool = False):
@@ -35,10 +38,23 @@ class FakeRedis:
             raise RedisConnectionError("down")
         return self.store.get(k)
 
-    async def set(self, k, v, ex=None):
+    async def set(self, k, v, ex=None, nx=False):
         if self.fail:
             raise RedisConnectionError("down")
+        if nx and k in self.store:
+            return None
         self.store[k] = v
+        return True
+
+    async def lpush(self, k, v):
+        if self.fail:
+            raise RedisConnectionError("down")
+        self.store.setdefault(k, []).insert(0, v)
+        return len(self.store[k])
+
+    async def ltrim(self, k, start, end):
+        self.store[k] = self.store.get(k, [])[start:end + 1]
+        return True
 
     async def ping(self):
         if self.fail:

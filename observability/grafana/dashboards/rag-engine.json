@@ -14,6 +14,21 @@
     "from": "now-30m",
     "to": "now"
   },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
   "panels": [
     {
       "type": "stat",
@@ -21,7 +36,7 @@
       "description": "",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 0,
@@ -57,7 +72,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "sum(rate(rag_requests_total[5m]))",
           "legendFormat": "",
@@ -72,7 +87,7 @@
       "description": "",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 4,
@@ -116,7 +131,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "(sum(rate(rag_requests_total{status=~\"5..\"}[5m])) or vector(0)) / sum(rate(rag_requests_total[5m]))",
           "legendFormat": "",
@@ -131,7 +146,7 @@
       "description": "",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 8,
@@ -175,7 +190,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_request_duration_seconds_bucket{route=\"/api/v1/ask\"}[5m])))",
           "legendFormat": "",
@@ -190,7 +205,7 @@
       "description": "",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 12,
@@ -226,7 +241,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "sum(rate(rag_cache_lookups_total{result=\"hit\"}[5m])) / sum(rate(rag_cache_lookups_total[5m]))",
           "legendFormat": "",
@@ -241,7 +256,7 @@
       "description": "Token rate x Groq on-demand price for gpt-oss-20b",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 16,
@@ -277,7 +292,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "(sum(rate(rag_llm_tokens_total{type=\"prompt\"}[5m])) * 0.075 + sum(rate(rag_llm_tokens_total{type=\"completion\"}[5m])) * 0.3) / 1e6 * 3600",
           "legendFormat": "",
@@ -292,7 +307,7 @@
       "description": "1 while Redis is being skipped after failures",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 20,
@@ -332,7 +347,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "max(rag_cache_breaker_open)",
           "legendFormat": "",
@@ -347,7 +362,7 @@
       "description": "",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 0,
@@ -378,7 +393,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "sum by (route, status) (rate(rag_requests_total[1m]))",
           "legendFormat": "{{route}} {{status}}",
@@ -393,7 +408,7 @@
       "description": "",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 12,
@@ -424,7 +439,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.5, sum by (le, route) (rate(rag_request_duration_seconds_bucket[5m])))",
           "legendFormat": "p50 {{route}}",
@@ -433,7 +448,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.95, sum by (le, route) (rate(rag_request_duration_seconds_bucket[5m])))",
           "legendFormat": "p95 {{route}}",
@@ -444,11 +459,11 @@
     },
     {
       "type": "timeseries",
-      "title": "Stage latency p95 (cache lookup, search, LLM)",
+      "title": "Stage latency p95 (cache lookup, search, LLM, LLM first token)",
       "description": "Where /ask time goes; search includes query embedding",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 0,
@@ -479,7 +494,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(rag_stage_duration_seconds_bucket[5m])))",
           "legendFormat": "{{stage}}",
@@ -494,7 +509,7 @@
       "description": "llm_error = LLM failed or rate-limited; shoppers saw the fallback message",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 12,
@@ -525,7 +540,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "sum by (source) (rate(rag_answers_total[5m]))",
           "legendFormat": "{{source}}",
@@ -540,7 +555,7 @@
       "description": "",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 0,
@@ -571,7 +586,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "sum by (type) (rate(rag_llm_tokens_total[5m])) * 60",
           "legendFormat": "{{type}}",
@@ -586,7 +601,7 @@
       "description": "",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 8,
@@ -617,7 +632,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "sum by (result) (rate(rag_cache_lookups_total[5m]))",
           "legendFormat": "{{result}}",
@@ -628,11 +643,57 @@
     },
     {
       "type": "timeseries",
+      "title": "Shopper feedback (ratings / hour)",
+      "description": "Thumbs up/down on answers; details via deploy/export_feedback.py",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (rating) (increase(rag_feedback_total[1h]))",
+          "legendFormat": "{{rating}}",
+          "refId": "A"
+        }
+      ],
+      "id": 13
+    },
+    {
+      "type": "timeseries",
       "title": "Refused requests / s",
       "description": "",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "gridPos": {
         "x": 16,
@@ -663,7 +724,7 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "sum by (scope) (rate(rag_rate_limited_total[5m]))",
           "legendFormat": "rate limited: {{scope}}",
@@ -672,14 +733,14 @@
         {
           "datasource": {
             "type": "prometheus",
-            "uid": "prometheus"
+            "uid": "${datasource}"
           },
           "expr": "sum(rate(rag_auth_failures_total[5m]))",
           "legendFormat": "bad or missing API key",
           "refId": "B"
         }
       ],
-      "id": 13
+      "id": 14
     }
   ]
 }

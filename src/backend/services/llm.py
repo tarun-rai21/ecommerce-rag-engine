@@ -1,8 +1,9 @@
 import asyncio
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from groq import APIConnectionError, Groq, RateLimitError
+from groq import APIConnectionError, AsyncGroq, Groq, RateLimitError
 from loguru import logger
 from tenacity import (
     retry,
@@ -80,11 +81,30 @@ class LLMResult:
     completion_tokens: int | None = None
 
 
+@dataclass
+class StreamUsage:
+    """Filled in by LLMService.stream_answer once the stream ends."""
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+class LLMUnavailable(Exception):
+    """The LLM could not be reached (after retries) before any text was produced."""
+
+
+STREAM_ATTEMPTS = 3
+
+
 class LLMService:
-    def __init__(self, client: Groq | None = None) -> None:
+    def __init__(self, client: Groq | None = None, async_client: AsyncGroq | None = None) -> None:
         # max_retries=0: tenacity below is the single retry layer (the SDK's own
         # retries would otherwise multiply with it).
         self.client = client or Groq(
+            api_key=settings.GROQ_API_KEY,
+            max_retries=0,
+            timeout=settings.LLM_TIMEOUT_SECONDS,
+        )
+        self.async_client = async_client or AsyncGroq(
             api_key=settings.GROQ_API_KEY,
             max_retries=0,
             timeout=settings.LLM_TIMEOUT_SECONDS,
@@ -121,3 +141,37 @@ class LLMService:
         except Exception as e:
             logger.error(f"LLM generation failed after retries: {e!r}")
             return LLMResult(answer=UNAVAILABLE_MESSAGE, ok=False)
+
+    async def stream_answer(self, query: str, context: str, usage: StreamUsage) -> AsyncIterator[str]:
+        """Yields raw text deltas as the model writes them; fills `usage` at the end.
+
+        Opening the stream is retried like generate_answer (rate limits, dropped
+        connections); once text has been produced, a failure is raised to the caller,
+        which has already shown part of the answer. Raises LLMUnavailable if no stream
+        could be opened. If the caller stops early (client disconnected), the upstream
+        request is closed instead of running to completion."""
+        messages = build_messages(query, context)
+        for attempt in range(1, STREAM_ATTEMPTS + 1):
+            try:
+                stream = await self.async_client.chat.completions.create(
+                    model=self.model_name, messages=messages, stream=True,
+                    **GENERATION_PARAMS, **self.extra_params,
+                )
+                break
+            except (RateLimitError, APIConnectionError) as e:
+                if attempt == STREAM_ATTEMPTS:
+                    raise LLMUnavailable(repr(e)) from e
+                await asyncio.sleep(min(2 ** attempt, 16))
+            except Exception as e:
+                raise LLMUnavailable(repr(e)) from e
+        try:
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+                reported = chunk.usage or getattr(getattr(chunk, "x_groq", None), "usage", None)
+                if reported:
+                    usage.prompt_tokens, usage.completion_tokens = reported.prompt_tokens, reported.completion_tokens
+        finally:
+            close = getattr(stream, "close", None)
+            if close:
+                await close()

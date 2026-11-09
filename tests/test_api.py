@@ -38,7 +38,8 @@ def test_llm_failure_is_flagged_and_not_cached(make_client):
     r = c.post("/api/v1/ask", json={"q": "bag"}).json()
     assert r["source"] == "llm_error" and r["answer"] == UNAVAILABLE_MESSAGE
     assert r["retrieved_products"]  # products still returned
-    assert redis.store == {}
+    # Not cached (only the feedback record of what the shopper saw is stored).
+    assert not [k for k in redis.store if k.startswith("rag:") and ":ask:" in k]
 
 
 def test_corrupt_cache_entry_is_ignored(make_client):
