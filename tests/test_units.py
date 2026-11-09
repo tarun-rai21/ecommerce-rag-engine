@@ -150,3 +150,22 @@ def test_redis_url_is_used_with_tls(monkeypatch):
     kwargs = CacheService(op_timeout=0.1).client.connection_pool.connection_kwargs
     assert kwargs["host"] == "example.upstash.io" and kwargs["password"] == "secret"
     assert CacheService(op_timeout=0.1).client.connection_pool.connection_class.__name__ == "SSLConnection"
+
+
+def test_ping_reports_why_redis_is_unreachable():
+    class Refusing:
+        async def ping(self):
+            raise ConnectionRefusedError("refused")
+
+    class Slow:
+        async def ping(self):
+            await asyncio.sleep(5)
+
+    assert asyncio.run(CacheService(client=Refusing()).ping()) == (False, "ConnectionRefusedError")
+    from config.settings import settings
+    old = settings.CACHE_CONNECT_TIMEOUT_SECONDS
+    settings.CACHE_CONNECT_TIMEOUT_SECONDS = 0.05
+    try:
+        assert asyncio.run(CacheService(client=Slow(), op_timeout=0.05).ping()) == (False, "TimeoutError")
+    finally:
+        settings.CACHE_CONNECT_TIMEOUT_SECONDS = old

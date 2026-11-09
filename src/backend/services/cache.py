@@ -48,8 +48,8 @@ class CacheService:
     def _connect() -> aioredis.Redis:
         options = {
             "decode_responses": True,
-            "socket_connect_timeout": 0.5,
-            "socket_timeout": 0.5,
+            "socket_connect_timeout": settings.CACHE_CONNECT_TIMEOUT_SECONDS,
+            "socket_timeout": max(0.5, settings.CACHE_OP_TIMEOUT_SECONDS),
             "retry": Retry(NoBackoff(), 0),  # no client-side retries; the breaker handles outages
         }
         if settings.REDIS_URL:  # managed Redis, e.g. rediss://default:<password>@<host>:6379
@@ -96,12 +96,17 @@ class CacheService:
         self._timeout_streak = 0
         logger.warning(f"Cache {op} failed ({error!r}); bypassing cache for {self.cooldown:.0f}s.")
 
-    async def ping(self) -> bool:
-        """Readiness probe. Doesn't touch the circuit breaker: a probe isn't traffic."""
+    async def ping(self) -> tuple[bool, str | None]:
+        """Readiness probe: (reachable, error class name). Doesn't touch the circuit breaker
+        (a probe isn't traffic) and allows time to open a connection, which can be slow."""
+        timeout = settings.CACHE_CONNECT_TIMEOUT_SECONDS + self.op_timeout
         try:
-            return bool(await asyncio.wait_for(self.client.ping(), timeout=self.op_timeout))
-        except Exception:
-            return False
+            return bool(await asyncio.wait_for(self.client.ping(), timeout=timeout)), None
+        except Exception as e:
+            # The class and message name the problem (timeout, refused, bad password)
+            # without the password-bearing URL.
+            logger.warning(f"Redis ping failed: {type(e).__name__}: {e}")
+            return False, type(e).__name__
 
     async def get(self, key: str) -> str | None:
         _, value = await self._run("GET", lambda: self.client.get(key))

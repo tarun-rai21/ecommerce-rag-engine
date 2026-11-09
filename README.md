@@ -2,6 +2,10 @@
 
 [![CI](https://github.com/tarun-rai21/ecommerce-rag-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/tarun-rai21/ecommerce-rag-engine/actions/workflows/ci.yml)
 
+**Live demo: [ecommerce-rag-search.streamlit.app](https://ecommerce-rag-search.streamlit.app)** · API: [docs](https://ecommerce-rag-backend.onrender.com/docs), [readiness](https://ecommerce-rag-backend.onrender.com/readyz)
+
+> Free hosting: the backend sleeps after 15 minutes without traffic, so the first search after a quiet spell can take about a minute while it wakes. Searches after that take well under a second plus the LLM call. Try "grey area rug 8x10" or "mid-century coffee table under $300".
+
 A production-grade hybrid search and Retrieval-Augmented Generation (RAG) engine for e-commerce product discovery. Built with FastAPI, Qdrant, FastEmbed, Groq LLM, Redis, and Streamlit — fully containerized with Docker Compose.
 
 ---
@@ -234,6 +238,8 @@ The suite uses Qdrant's local mode and the real embedding models, so it does not
 ## Deployment
 
 ### Live demo: free managed services
+
+Running at [ecommerce-rag-search.streamlit.app](https://ecommerce-rag-search.streamlit.app), with the backend at [ecommerce-rag-backend.onrender.com](https://ecommerce-rag-backend.onrender.com/readyz).
 
 ```
 Visitor ──▶ Streamlit Community Cloud (UI)
