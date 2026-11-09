@@ -25,6 +25,7 @@ from src.ingestion.embedder import ProductEmbedder
 from src.ingestion.embedding_cache import EmbeddingCache
 from src.ingestion.loaders import LOADERS
 from src.ingestion.schemas import ProductRecord
+from src.ingestion.versioning import next_version, promote, rollback, validate, versioned_name
 
 # ── Constants ────────────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -252,7 +253,22 @@ def main(argv: list[str] | None = None) -> None:
         help="Drop and rebuild the collection (required once to add the BM25 IDF modifier).",
     )
     parser.add_argument("--no-cache", action="store_true", help="Don't read or write the embedding cache.")
+    parser.add_argument("--versioned", action="store_true",
+                        help="Build '<collection>_v<N>', validate it, then point the alias '<collection>' at it.")
+    parser.add_argument("--replace-collection", action="store_true",
+                        help="With --versioned: allow the alias to take over a plain collection's name (once).")
+    parser.add_argument("--keep", type=int, default=2, help="With --versioned: versions to keep (default 2).")
+    parser.add_argument("--rollback", action="store_true", help="Point the alias back to the previous version.")
     args = parser.parse_args(argv)
+
+    if args.rollback:
+        rollback(get_client(), args.collection)
+        return
+    alias = args.collection
+    if args.versioned:
+        version_client = get_client()
+        args.collection = versioned_name(alias, next_version(version_client, alias))
+        logger.info(f"Versioned build: '{args.collection}', then alias '{alias}' -> it after validation.")
 
     logger.info(f"Starting ingestion: dataset={args.dataset} collection={args.collection} limit={args.limit}")
     records = list(LOADERS[args.dataset](limit=args.limit))
@@ -279,6 +295,14 @@ def main(argv: list[str] | None = None) -> None:
     for idx, reason in report.failures[:20]:
         logger.info(f"  rejected #{idx}: {reason}")
     logger.info(f"Report written to {write_report(report)}")
+
+    if args.versioned:
+        problems = validate(client, args.collection, report.uploaded, embedder,
+                            sparse_name=SPARSE_VECTOR_NAME, dense_name=DENSE_VECTOR_NAME)
+        if problems:
+            # The alias still points at the old version: nothing changed for the API.
+            raise SystemExit(f"Not promoting '{args.collection}': " + "; ".join(problems))
+        promote(client, alias, args.collection, keep=args.keep, replace_collection=args.replace_collection)
 
 
 if __name__ == "__main__":

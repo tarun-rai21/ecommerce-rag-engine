@@ -32,3 +32,18 @@ def test_streamlit_cloud_requirements_match_the_frontend_image():
                       if line.strip() and not line.startswith("#"))
 
     assert pins("src/frontend/requirements.txt") == pins("requirements-frontend.txt")
+
+
+def test_pyproject_pins_match_the_requirements_files():
+    import tomllib
+    from pathlib import Path
+
+    def pins(path):
+        return sorted(line.strip() for line in Path(path).read_text(encoding="utf-8").splitlines()
+                      if line.strip() and not line.startswith(("#", "-r")))
+
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    assert sorted(project["project"]["dependencies"]) == pins("requirements-backend.txt")
+    assert sorted(project["dependency-groups"]["frontend"]) == pins("requirements-frontend.txt")
+    dev = [d for d in project["dependency-groups"]["dev"] if isinstance(d, str)]
+    assert sorted(dev) == pins("requirements-dev.txt")

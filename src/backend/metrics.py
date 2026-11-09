@@ -41,6 +41,7 @@ CACHE_BREAKER_OPEN = Gauge("rag_cache_breaker_open", "1 while the circuit breake
 # Safeguards.
 RATE_LIMITED = Counter("rag_rate_limited_total", "Requests refused by a rate limit", ["scope"])
 AUTH_FAILURES = Counter("rag_auth_failures_total", "Requests refused for a missing or invalid API key")
+FEEDBACK = Counter("rag_feedback_total", "Shopper ratings of answers", ["rating"])  # up | down
 
 
 # Create every known label value at 0 now. A series that first appears with a non-zero
@@ -53,6 +54,8 @@ for _result in ("hit", "miss", "error", "bypassed"):
     CACHE_LOOKUPS.labels(_result)
 for _scope in ("search", "ask"):
     RATE_LIMITED.labels(_scope)
+for _rating in ("up", "down"):
+    FEEDBACK.labels(_rating)
 
 
 def observe_stage(stage: str, milliseconds: float) -> None:

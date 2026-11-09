@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     LOG_FORMAT: str = Field(default="text", pattern="^(text|json)$")  # json: one JSON object per line
     LOG_LEVEL: str = "INFO"
 
+    # ── Feedback ──────────────────────────────────────────
+    FEEDBACK_RETENTION_DAYS: int = Field(default=7, ge=1)  # how long an answer stays ratable
+    FEEDBACK_MAX_ITEMS: int = Field(default=10_000, ge=1)  # ratings kept (newest first)
+
     def qdrant_client_kwargs(self) -> dict:
         """Connection arguments for QdrantClient / AsyncQdrantClient (gRPC either way)."""
         if self.QDRANT_URL:

@@ -1,0 +1,24 @@
+# pre-commit install   # once; then these run on every `git commit`
+# pre-commit run --all-files
+# Data files are left byte-for-byte as recorded (the labelled answers keep markdown
+# line-break spaces), so the whitespace hooks skip them.
+exclude: '^(data/|src/evaluation/.*\.(csv|json)$)'
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20  # same version as CI and requirements-dev.txt
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]   # datasets and model files don't belong in git
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]

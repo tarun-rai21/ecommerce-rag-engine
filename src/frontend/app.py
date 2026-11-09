@@ -1,4 +1,5 @@
-import html
+import itertools
+import json
 import os
 
 import requests
@@ -47,6 +48,8 @@ if "last_products" not in st.session_state:
     st.session_state.last_products = []
 if "last_interpretation" not in st.session_state:
     st.session_state.last_interpretation = None
+if "last_request_id" not in st.session_state:
+    st.session_state.last_request_id = None
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -99,6 +102,34 @@ def _clear_result() -> None:
     st.session_state.last_timing = {}
     st.session_state.last_products = []
     st.session_state.last_interpretation = None
+    st.session_state.last_request_id = None
+
+
+def stream_answer(body: dict, state: dict):
+    """Yields answer text from /ask/stream as it arrives; stores the `meta`, `done` and
+    `error` events in `state`. Connection: 15 s; each read: 90 s, because a free-tier
+    backend that has slept takes about a minute to send its first byte."""
+    with requests.post(f"{BACKEND_URL}/api/v1/ask/stream", json=body, headers=HEADERS,
+                       stream=True, timeout=(15, 90)) as response:
+        if not response.ok:
+            raise RuntimeError(error_message(response))
+        response.encoding = "utf-8"
+        event = None
+        for line in response.iter_lines(decode_unicode=True):
+            if line.startswith("event: "):
+                event = line[len("event: "):]
+            elif line.startswith("data: "):
+                data = json.loads(line[len("data: "):])
+                if event == "token":
+                    yield data["text"]
+                else:
+                    state[event] = data
+
+
+def interpretation(meta: dict) -> str:
+    applied = describe_filters(meta.get("applied_filters") or {})
+    return (f"Searched for “{meta.get('interpreted_query', '')}”" + (f" · Filters: {applied}" if applied else "")
+            + (f" · {meta['preferred_size']} sizes first" if meta.get("preferred_size") else ""))
 
 
 if search_clicked and query.strip() and min_price is not None and max_price is not None and min_price > max_price:
@@ -108,39 +139,39 @@ elif search_clicked and query.strip():
     explicit = {k: v for k, v in {"min_price": min_price, "max_price": max_price,
                                   "min_rating": min_rating, "categories": categories}.items() if v not in (None, [])}
     body = {"q": query.strip(), "limit": 5, **({"filters": explicit} if explicit else {})}
-    # A free-tier backend that has slept takes about a minute to wake on the first request.
-    with st.spinner("Searching... The first search after a quiet spell can take up to a minute "
-                    "while the free-tier backend wakes up."):
-        try:
-            response = requests.post(f"{BACKEND_URL}/api/v1/ask", json=body, headers=HEADERS, timeout=90)
-            if not response.ok:
-                raise RuntimeError(error_message(response))
-            data = response.json()
-
-            st.session_state.last_answer = data.get("answer", "")
-            st.session_state.last_source = data.get("source", "llm")
-            st.session_state.last_timing = data.get("timing", {})
-            st.session_state.last_products = data.get("retrieved_products", [])
-            applied = describe_filters(data.get("applied_filters") or {})
-            st.session_state.last_interpretation = (
-                f"Searched for “{data.get('interpreted_query', query)}”" + (f" · Filters: {applied}" if applied else "")
-                + (f" · {data['preferred_size']} sizes first" if data.get("preferred_size") else "")
-            )
-
-        except requests.exceptions.ConnectionError:
-            st.error("Cannot connect to backend. Make sure the FastAPI server is running.")
-        except requests.exceptions.Timeout:
-            st.error("The request timed out. If the backend was asleep it should be awake now, "
-                     "so please try again.")
-        except RuntimeError as e:
-            st.error(str(e))
-        except Exception as e:
-            st.error(f"Unexpected error: {e}")
+    state: dict = {}
+    try:
+        with st.spinner("Searching... The first search after a quiet spell can take up to a minute "
+                        "while the free-tier backend wakes up."):
+            tokens = stream_answer(body, state)
+            first = next(tokens, None)  # wait for the first sentence under the spinner
+        st.subheader("💬 Answer")
+        answer = st.write_stream(itertools.chain([first], tokens)) if first is not None else ""
+        meta, done = state.get("meta", {}), state.get("done", {})
+        st.session_state.last_answer = answer if isinstance(answer, str) else "".join(answer)
+        st.session_state.last_source = done.get("source", meta.get("source"))
+        st.session_state.last_timing = done.get("timing", {})
+        st.session_state.last_products = meta.get("retrieved_products", [])
+        st.session_state.last_interpretation = interpretation(meta)
+        st.session_state.last_request_id = meta.get("request_id")
+        if "error" in state:
+            st.session_state.last_error = state["error"]["message"]
+        st.rerun()  # redraw as a finished answer, with badges and diagnostics
+    except requests.exceptions.ConnectionError:
+        st.error("Cannot connect to backend. Make sure the FastAPI server is running.")
+    except requests.exceptions.Timeout:
+        st.error("The request timed out. If the backend was asleep it should be awake now, "
+                 "so please try again.")
+    except RuntimeError as e:
+        st.error(str(e))
 
 elif search_clicked and not query.strip():
     st.warning("Please enter a search query.")
 
 # ── Answer Display ────────────────────────────────────────
+if st.session_state.get("last_error"):
+    st.error(st.session_state.pop("last_error"))
+
 if st.session_state.last_answer:
     st.subheader("💬 Answer")
 
@@ -155,26 +186,27 @@ if st.session_state.last_answer:
     if st.session_state.last_interpretation:
         st.caption(st.session_state.last_interpretation)
 
-    # The answer is model output and can be steered by the query: escape it before
-    # embedding in HTML so it can't inject markup or scripts.
-    safe_answer = html.escape(st.session_state.last_answer).replace("\n", "<br>")
+    # Markdown, so the model's tables and lists render. st.markdown never renders raw HTML
+    # unless unsafe_allow_html=True, so a steered answer can't inject markup or scripts.
+    with st.container(border=True):
+        st.markdown(st.session_state.last_answer)
 
-    st.markdown(
-        f"""
-        <div style="
-            background-color: #1e1e2e;
-            border-left: 4px solid #7c3aed;
-            padding: 1.2rem 1.5rem;
-            border-radius: 0.5rem;
-            font-size: 1rem;
-            line-height: 1.7;
-            color: #e2e8f0;
-        ">
-            {safe_answer}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Thumbs up/down, joined server-side to this exact answer through its request id.
+    request_id = st.session_state.last_request_id
+    if request_id and st.session_state.last_source != "no_results":
+        def send_feedback() -> None:
+            choice = st.session_state.get(f"fb_{request_id}")
+            if choice is None:
+                return
+            try:
+                r = requests.post(f"{BACKEND_URL}/api/v1/feedback", headers=HEADERS, timeout=10,
+                                  json={"request_id": request_id, "rating": "up" if choice == 1 else "down"})
+                st.toast("Thanks for the feedback!" if r.ok else error_message(r))
+            except requests.exceptions.RequestException:
+                st.toast("Feedback couldn't be sent right now.")
+
+        st.caption("Was this answer helpful?")
+        st.feedback("thumbs", key=f"fb_{request_id}", on_change=send_feedback)
 
 # ── Diagnostics Sidebar ───────────────────────────────────
 if st.session_state.last_timing:

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Literal
 
 from loguru import logger
@@ -93,6 +94,8 @@ class ProductSearchService:
             settings.USE_NATIVE_FUSION if use_native_fusion is None else use_native_fusion
         )
         self.reranker = reranker
+        self._active: str | None = None
+        self._active_at = 0.0
 
     def _prefetch(self, limit: int) -> int:
         # Each fusion leg needs at least `limit` candidates to fill the result list.
@@ -100,6 +103,25 @@ class ProductSearchService:
 
     async def close(self) -> None:
         await self.client.close()
+
+    ACTIVE_TTL_SECONDS = 30.0
+
+    async def active_collection(self) -> str:
+        """The collection COLLECTION_NAME resolves to: the alias's target when it is an
+        alias (versioned index), else the name itself. Re-checked every 30 s, so cache
+        keys change within 30 s of an alias switch and old answers stop being served."""
+        now = time.monotonic()
+        if self._active and now - self._active_at < self.ACTIVE_TTL_SECONDS:
+            return self._active
+        try:
+            aliases = (await self.client.get_aliases()).aliases
+            self._active = next((a.collection_name for a in aliases if a.alias_name == self.collection_name),
+                                self.collection_name)
+        except Exception as e:  # keep the last known value; searches don't depend on this
+            logger.warning(f"Could not resolve collection alias: {type(e).__name__}")
+            self._active = self._active or self.collection_name
+        self._active_at = now
+        return self._active
 
     async def ready(self) -> int:
         """Points in the collection; raises if Qdrant or the collection is unreachable."""

@@ -219,14 +219,45 @@ Options: `--dataset sample` (the original 39-product demo), `--collection <name>
 
 Ingestion validates every record, creates payload indexes on `category`, `product_class`, `price`, `rating` and `review_count`, and writes a JSON report to `reports/` (counts, cache reuse, rejection reasons). It refuses to reuse an existing collection whose sparse index lacks the IDF modifier (`--recreate` rebuilds it). The first full run takes about an hour on a laptop CPU; later runs reuse the embedding cache.
 
-### Run the tests
-```bash
-pip install -r requirements-dev.txt
-pytest
-```
-The suite uses Qdrant's local mode and the real embedding models, so it does not need Docker. Lint with `ruff check .`.
+**Rebuilding without downtime.** With `--versioned`, `wands_products` is a Qdrant alias that points at a real collection, `wands_products_v<N>`:
 
-**CI** (`.github/workflows/ci.yml`) runs on every push and on pull requests to `master`: ruff, the full test suite on Python 3.11 (with the embedding models and pip packages cached between runs), and a build of both Docker images. It needs no secrets, because the tests replace the LLM with fakes.
+1. Ingestion builds the next version while the current one keeps serving.
+2. It validates the new version: the point count, the BM25 IDF modifier, and smoke queries that must return results. If any check fails, the alias isn't touched.
+3. It switches the alias in a single atomic request.
+4. It keeps the previous version for `--rollback` and deletes older ones (`--keep 2`).
+
+The API resolves the alias every 30 s, puts the active version into its cache keys so answers built on the old index stop being served, and reports the version in `/readyz`.
+
+```bash
+python -m src.ingestion.ingest --versioned --replace-collection  # once: the alias takes over the plain collection's name
+python -m src.ingestion.ingest --versioned                       # every rebuild after that
+python -m src.ingestion.ingest --rollback                        # back one version
+```
+
+Measured locally:
+- A full rebuild from cached embeddings took 72–123 s.
+- During a switch from v1 to v2, 4 closed-loop users ran 4,632 searches with **0 errors**.
+- `--rollback` and a switch forward again were also checked against the running API.
+
+The live demo's Qdrant Cloud collection is still unversioned. The API supports both layouts, so no migration is needed until the cloud index is rebuilt.
+
+### Development
+
+```bash
+uv sync --all-groups      # .venv from pyproject.toml + uv.lock (or: pip install -r requirements-dev.txt)
+uv run pytest             # tests: Qdrant local mode + real embedding models, no Docker needed
+uv run pre-commit install # ruff and file-hygiene checks on every commit
+make help                 # common tasks: up, test, lint, ingest-versioned, eval-*, bench, observability, ...
+```
+
+`pyproject.toml` with `uv.lock` (95 packages, locked) is the dependency source for development. Each Docker image installs only its own requirements file, and Streamlit Cloud installs `src/frontend/requirements.txt`. A test keeps all of these pinned to the same versions as `pyproject.toml`, so they can't drift. The pre-commit hooks run ruff, check YAML and TOML, and reject private keys, merge-conflict markers and files over 1 MB. They also fix trailing whitespace and missing final newlines, except in recorded data files, whose markdown line-break spaces are part of the labelled answers.
+
+**CI** (`.github/workflows/ci.yml`) runs on every push and on pull requests to `master`:
+- the pre-commit checks;
+- the full test suite on Python 3.11, with the embedding models and pip packages cached between runs;
+- a build of both Docker images.
+
+It needs no secrets, because the tests replace the LLM with fakes.
 
 ### 5. Access the application
 - **Frontend UI**: http://localhost:8501
@@ -273,7 +304,13 @@ Each query was checked against live traffic. For example, after a run of searche
 
 **Logs.** `LOG_FORMAT=json` writes one JSON object per line for a log platform to index, which Render uses. Every line written while handling a request carries its `request_id`, the same id returned in `X-Request-ID` and in error bodies, so a support report can be traced to its log lines. Tracebacks don't print local variables (`diagnose=False`), because those can hold keys or queries, and the Redis URL with its password is never logged.
 
-On the free deployment, Prometheus and Grafana run locally only. Pointing a hosted Prometheus or Grafana Cloud at the backend's `/metrics` with the token is the next step.
+**Hosted dashboard (Grafana Cloud, free tier).** The dashboard picks its data source from a `datasource` variable instead of a fixed uid, so the same JSON imports into Grafana Cloud unchanged:
+
+1. In Grafana Cloud, go to **Connections → Add new connection → Metrics Endpoint**.
+2. Point it at `https://ecommerce-rag-backend.onrender.com/metrics` with **Bearer** auth, using `METRICS_TOKEN` from Render. Scrape every 60 s.
+3. Go to **Dashboards → New → Import**, upload `observability/grafana/dashboards/rag-engine.json`, and pick the Grafana Cloud Prometheus data source.
+
+Note that a scrape every minute keeps Render's free backend from sleeping. That is about 744 instance hours a month, under Render's 750 free hours. It removes the cold start for visitors, but it uses the whole free allowance for this one service.
 
 ## Deployment
 
@@ -423,6 +460,43 @@ Response: {
 }
 ```
 `/ask` accepts the same `filters` and `parse_filters` fields as `/search`.
+
+### POST /api/v1/ask/stream
+
+This is `/ask` as [Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events), with the same request body, cache, filters, rate limit and answer rules. The Streamlit UI uses it:
+
+```
+event: meta   data: {"request_id": "...", "source": "llm", "interpreted_query": "...", "retrieved_products": [...]}
+event: token  data: {"text": "| **Alyssa Mid-Century Modern 6-Drawer Dresser** | $398.99 | ... |\n"}   (repeated)
+event: done   data: {"source": "llm", "timing": {...}, "usage": {...}, "time_to_first_token_ms": 717}
+```
+
+- **Text is released in whole sentences or table rows.** The rule that removes whole-catalog claims ("these are the only ones…") needs complete sentences, so a partial sentence is held back until it ends. A claim is never shown and then retracted. Fed the 110 evaluation answers plus edge cases in random-sized pieces, the streamed text matched `clean_output` exactly.
+- **Failures:** if the stream can't start (rate limit, connection), the fallback message is sent as the answer and `done` reports `llm_error`. A failure part-way through sends an `error` event and then `done`. An error before streaming begins, such as a search outage, is a normal JSON error response.
+- **Caching:** a completed answer is cached under the same key as `/ask`, so either endpoint serves it.
+- **Disconnects:** if the client goes away, the upstream LLM request is closed rather than left running.
+- **Measured:** a table answer locally showed its first row at 0.68 s and finished at 0.97 s. gpt-oss reasons before it writes, so most of the wait comes before the first token, and streaming mainly helps longer answers and gives visible progress. Time to first token is the `llm_first_token` stage in the metrics.
+
+### POST /api/v1/feedback
+
+```json
+Request:  {"request_id": "49479d85...", "rating": "up", "comment": "optional, up to 500 chars"}
+Response: {"status": "recorded"}   // 201
+```
+
+Every answered `/ask` and `/ask/stream` records what the shopper saw, keyed by its request id, for `FEEDBACK_RETENTION_DAYS` (7):
+- the query and its interpretation;
+- the filters;
+- the retrieved product ids;
+- the answer and its source;
+- the model and the index version.
+
+A rating is stored with that record, so each one can be analysed against its retrieval and answer. The rules:
+- One rating per answer; a second one gets `409 already_rated`.
+- An unknown or expired id gets `404 unknown_request`.
+- If Redis is down, answers still work, but a rating gets `503 feedback_unavailable`.
+
+Recording is best effort with a 250 ms budget, so it can't slow an answer. Ratings are kept in Redis (Upstash in the live demo), newest first, capped at `FEEDBACK_MAX_ITEMS`. `rag_feedback_total{rating}` counts them, and `python deploy/export_feedback.py [--ask-url]` exports them as JSON Lines with a summary. Comments are stored but never logged. The UI shows 👍/👎 under each answer.
 
 ---
 
@@ -678,7 +752,9 @@ ecommerce-rag-engine/
 
 │   │   ├── embedding_cache.py  # SQLite cache keyed by text hash (resumable)
 
-│   │   └── ingest.py         # Batch ingestion pipeline + payload indexes + report
+│   │   ├── ingest.py         # Batch ingestion pipeline + payload indexes + report
+
+│   │   └── versioning.py     # Versioned collections + alias switch / rollback
 
 │   ├── backend/
 
@@ -712,7 +788,11 @@ ecommerce-rag-engine/
 
 │   │       ├── cache.py      # Redis cache service
 
-│   │       └── llm.py        # Groq LLM service
+│   │       ├── feedback.py   # Ratings joined to the recorded answer
+
+│   │       ├── stream_cleaner.py # Answer rules applied to a streamed answer
+
+│   │       └── llm.py        # Groq LLM service (blocking + streaming)
 
 │   ├── frontend/
 
@@ -748,12 +828,16 @@ ecommerce-rag-engine/
 │   ├── Caddyfile             # HTTPS + routing (/ → UI, /api → backend)
 │   ├── setup-server.sh       # One-time Ubuntu setup: Docker, swap, updates, clone
 │   ├── upload-index.sh       # Copy the local Qdrant collection to the server as a snapshot
-│   └── upload_snapshot.py    # Copy it to Qdrant Cloud instead (prompts for URL + key)
+│   ├── upload_snapshot.py    # Copy it to Qdrant Cloud instead (prompts for URL + key)
+│   └── export_feedback.py    # Export shopper ratings (with what they rated) to JSON Lines
 ├── observability/
 │   ├── prometheus.yml        # Scrape config for the backend's /metrics
 │   ├── build_dashboard.py    # Generates the Grafana dashboard JSON (dashboard as code)
 │   └── grafana/              # Provisioned data source + dashboard
 ├── docker-compose.observability.yml  # Optional Prometheus + Grafana
+├── pyproject.toml / uv.lock  # Dependencies for development (uv); Docker uses requirements-*.txt
+├── Makefile                  # Common tasks (make help)
+├── .pre-commit-config.yaml   # ruff + file hygiene on commit and in CI
 ├── render.yaml               # Render Blueprint for the backend (free plan)
 ├── benchmarks/
 │   ├── load_test.py          # Closed-loop load test: /search, /ask misses and hits
@@ -786,4 +870,3 @@ ecommerce-rag-engine/
 - **Incomplete judgments**: about 20% of top-10 results have no WANDS judgment and count as irrelevant, so absolute scores are pessimistic.
 - **Embedding model**: `bge-small-en-v1.5` is optimized for speed. `bge-large-en-v1.5` or `text-embedding-3-large` would improve semantic retrieval quality at higher compute cost.
 - **Sparse model**: BM25 is statistical. Upgrading to SPLADE neural sparse model would improve keyword expansion for ambiguous queries.
-

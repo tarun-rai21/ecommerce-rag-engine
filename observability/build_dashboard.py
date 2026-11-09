@@ -8,7 +8,9 @@ import json
 from pathlib import Path
 
 OUT = Path(__file__).parent / "grafana" / "dashboards" / "rag-engine.json"
-DS = {"type": "prometheus", "uid": "prometheus"}
+# A variable, not a fixed uid: the same JSON imports into local Grafana (uid "prometheus")
+# and into Grafana Cloud, whose Prometheus data source has a different uid.
+DS = {"type": "prometheus", "uid": "${datasource}"}
 
 # Groq on-demand prices for openai/gpt-oss-20b, USD per 1M tokens (see benchmarks/cost.py).
 PRICE_IN, PRICE_OUT = 0.075, 0.30
@@ -74,7 +76,7 @@ panels = [
                 target(p(0.95, "rag_request_duration_seconds", "route"), "p95 {{route}}", "B")],
                "s", 12, 4),
     # Row 3: pipeline
-    timeseries("Stage latency p95 (cache lookup, search, LLM)",
+    timeseries("Stage latency p95 (cache lookup, search, LLM, LLM first token)",
                [target(p(0.95, "rag_stage_duration_seconds", "stage"), "{{stage}}")], "s", 0, 12,
                description="Where /ask time goes; search includes query embedding"),
     timeseries("/ask answers by source",
@@ -85,6 +87,9 @@ panels = [
                [target("sum by (type) (rate(rag_llm_tokens_total[5m])) * 60", "{{type}}")], "short", 0, 20),
     timeseries("Cache lookups / s by result",
                [target("sum by (result) (rate(rag_cache_lookups_total[5m]))", "{{result}}")], "reqps", 8, 20, w=8),
+    timeseries("Shopper feedback (ratings / hour)",
+               [target("sum by (rating) (increase(rag_feedback_total[1h]))", "{{rating}}")], "short", 0, 28,
+               description="Thumbs up/down on answers; details via deploy/export_feedback.py"),
     timeseries("Refused requests / s",
                [target("sum by (scope) (rate(rag_rate_limited_total[5m]))", "rate limited: {{scope}}", "A"),
                 target("sum(rate(rag_auth_failures_total[5m]))", "bad or missing API key", "B")],
@@ -103,6 +108,10 @@ dashboard = {
     "version": 1,
     "refresh": "10s",
     "time": {"from": "now-30m", "to": "now"},
+    "templating": {"list": [{
+        "name": "datasource", "label": "Data source", "type": "datasource", "query": "prometheus",
+        "current": {}, "hide": 0, "refresh": 1, "includeAll": False, "multi": False,
+    }]},
     "panels": panels,
 }
 

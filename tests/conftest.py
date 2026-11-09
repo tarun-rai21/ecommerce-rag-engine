@@ -7,6 +7,7 @@ from qdrant_client import QdrantClient
 
 from src.backend.main import app
 from src.backend.services.cache import CacheService
+from src.backend.services.feedback import FeedbackStore
 from src.ingestion.embedder import ProductEmbedder
 from src.ingestion.ingest import ensure_collection, ingest_records
 from tests.fakes import FakeLLM, FakeRedis, FakeSearch
@@ -51,6 +52,7 @@ def make_client():
     def _make(search=None, redis=None, llm=None):
         app.state.search_service = search or FakeSearch()
         app.state.cache_service = CacheService(client=redis or FakeRedis())
+        app.state.feedback_store = FeedbackStore(app.state.cache_service.client)
         app.state.llm_service = llm or FakeLLM()
         # Not used as a context manager, so the lifespan (real services) doesn't run.
         return TestClient(app, raise_server_exceptions=False)
