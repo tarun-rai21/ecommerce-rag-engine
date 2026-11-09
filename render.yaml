@@ -34,6 +34,8 @@ services:
         value: "1"              # 0.1 CPU: one ONNX thread per model
       - key: CACHE_OP_TIMEOUT_SECONDS
         value: "0.5"            # Redis is across the network, not on localhost
+      - key: CACHE_CONNECT_TIMEOUT_SECONDS
+        value: "3"              # TLS handshake on 0.1 CPU; paid once per connection
       - key: QDRANT_TIMEOUT_SECONDS
         value: "10"
       - key: FORWARDED_ALLOW_IPS

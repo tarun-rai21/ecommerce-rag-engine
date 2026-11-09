@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
     CACHE_TTL_SECONDS: int = Field(default=300, ge=1)
     CACHE_OP_TIMEOUT_SECONDS: float = Field(default=0.25, gt=0)
+    # Opening a connection. A TLS handshake to a managed Redis costs ~0.2-0.35 s of CPU on a
+    # 0.1-CPU host, so raise this there; once open, the connection is reused.
+    CACHE_CONNECT_TIMEOUT_SECONDS: float = Field(default=0.5, gt=0)
     CACHE_COOLDOWN_SECONDS: float = Field(default=30.0, ge=0)
     CACHE_BREAKER_TIMEOUTS: int = Field(default=5, ge=1)  # timeouts in a row before Redis is skipped
     # Bump whenever the index or response format changes so stale entries are never served.

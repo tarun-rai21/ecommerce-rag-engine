@@ -13,6 +13,11 @@ from config.settings import settings
 router = APIRouter(tags=["health"])
 
 
+def _cache_check(result: tuple[bool, str | None]) -> dict:
+    ok, error = result
+    return {"ok": ok} if ok else {"ok": False, "error": error}
+
+
 @router.get("/healthz")
 async def healthz() -> dict:
     return {"status": "ok"}
@@ -28,7 +33,7 @@ async def readyz(request: Request) -> JSONResponse:
         qdrant = {"ok": False, "error": type(e).__name__}
     checks = {
         "qdrant": qdrant,
-        "cache": {"ok": await cache.ping()},
+        "cache": _cache_check(await cache.ping()),
         "llm": {"ok": bool(settings.GROQ_API_KEY)},  # configured; not called, to spend no quota
     }
     ready = qdrant["ok"]

@@ -31,6 +31,9 @@ async def lifespan(app: FastAPI):
     )
     app.state.search_service = ProductSearchService(reranker=reranker)
     app.state.cache_service = CacheService()
+    # Open the Redis connection now (and log why if it fails) rather than on the first request.
+    if (await app.state.cache_service.ping())[0]:
+        logger.info("Redis reachable.")
     app.state.llm_service = LLMService()
     yield
     logger.info("Shutting down.")
