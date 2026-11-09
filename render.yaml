@@ -38,5 +38,9 @@ services:
         value: "3"              # TLS handshake on 0.1 CPU; paid once per connection
       - key: QDRANT_TIMEOUT_SECONDS
         value: "10"
+      - key: METRICS_TOKEN
+        generateValue: true     # /metrics needs "Authorization: Bearer <token>"
+      - key: LOG_FORMAT
+        value: json             # one JSON object per line, with request_id
       - key: FORWARDED_ALLOW_IPS
         value: "*"              # only Render's proxy reaches the service: trust its X-Forwarded-For

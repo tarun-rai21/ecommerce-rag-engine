@@ -9,6 +9,7 @@ from fastapi import Header, Request
 
 from config.settings import settings
 from src.backend.api.errors import ApiError
+from src.backend.metrics import AUTH_FAILURES, RATE_LIMITED
 
 
 async def require_api_key(x_api_key: str | None = Header(default=None, alias="X-API-Key")) -> None:
@@ -18,6 +19,7 @@ async def require_api_key(x_api_key: str | None = Header(default=None, alias="X-
         return
     # compare_digest: the time taken doesn't reveal how much of a key matched.
     if not x_api_key or not any(hmac.compare_digest(x_api_key.encode(), k.encode()) for k in keys):
+        AUTH_FAILURES.inc()
         raise ApiError(401, "unauthorized", "Missing or invalid API key. Send it in the X-API-Key header.")
 
 
@@ -73,6 +75,7 @@ def rate_limit(scope: str, setting: str):
         per_minute = getattr(settings, setting)
         wait = rate_limiter.check(scope, client_id(request), per_minute)
         if wait is not None:
+            RATE_LIMITED.labels(scope).inc()
             retry = max(1, math.ceil(wait))
             raise ApiError(429, "rate_limited", f"Too many requests: the limit is {per_minute} per minute. "
                            f"Try again in {retry} s.", headers={"Retry-After": str(retry)})

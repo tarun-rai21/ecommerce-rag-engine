@@ -4,6 +4,7 @@ fastembed==0.8.0
 groq==1.5.0
 httpx==0.28.1
 loguru==0.7.3
+prometheus-client==0.21.1
 pydantic==2.13.4
 pydantic-settings==2.14.2
 pydantic_core==2.46.4
