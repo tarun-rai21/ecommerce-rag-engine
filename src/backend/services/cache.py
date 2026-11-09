@@ -12,6 +12,7 @@ from redis.exceptions import RedisError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from config.settings import settings
+from src.backend.metrics import CACHE_BREAKER_OPEN, CACHE_LOOKUPS
 
 
 class CacheService:
@@ -40,6 +41,7 @@ class CacheService:
         self.breaker_timeouts = breaker_timeouts if breaker_timeouts is not None else settings.CACHE_BREAKER_TIMEOUTS
         self._skip_until = 0.0
         self._timeout_streak = 0
+        CACHE_BREAKER_OPEN.set_function(lambda: 0.0 if self.available else 1.0)
         # Never log REDIS_URL itself: it contains the password.
         target = "REDIS_URL" if settings.REDIS_URL else f"'{settings.REDIS_HOST}:{settings.REDIS_PORT}'"
         logger.info(f"CacheService initialized at {target}")
@@ -109,7 +111,11 @@ class CacheService:
             return False, type(e).__name__
 
     async def get(self, key: str) -> str | None:
-        _, value = await self._run("GET", lambda: self.client.get(key))
+        if not self.available:
+            CACHE_LOOKUPS.labels("bypassed").inc()
+            return None
+        ok, value = await self._run("GET", lambda: self.client.get(key))
+        CACHE_LOOKUPS.labels("error" if not ok else "hit" if value is not None else "miss").inc()
         return value
 
     async def set(self, key: str, value: str, ttl_seconds: int | None = None) -> bool:

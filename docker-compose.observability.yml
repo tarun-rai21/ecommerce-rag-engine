@@ -1,0 +1,49 @@
+# Optional monitoring for the local stack: Prometheus scrapes the backend's /metrics and
+# Grafana shows the provisioned "RAG engine" dashboard.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#   Grafana: http://localhost:3000 (anonymous read-only; admin password from GRAFANA_ADMIN_PASSWORD)
+#   Prometheus: http://localhost:9090
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    container_name: prometheus_local
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: grafana_local
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/rag-engine.json
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - ecommerce-net
+
+volumes:
+  prometheus_data:
+  grafana_data:

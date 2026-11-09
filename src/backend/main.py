@@ -9,6 +9,8 @@ from src.backend.api.errors import install_error_handlers
 from src.backend.api.health import router as health_router
 from src.backend.api.middleware import RequestContextMiddleware
 from src.backend.api.v1.router import router as v1_router
+from src.backend.logging_config import configure_logging
+from src.backend.metrics import router as metrics_router
 from src.backend.services.cache import CacheService
 from src.backend.services.llm import LLMService
 from src.backend.services.rerank import RerankerService
@@ -41,6 +43,8 @@ async def lifespan(app: FastAPI):
     await app.state.cache_service.close()
 
 
+configure_logging(settings.LOG_FORMAT, settings.LOG_LEVEL)
+
 app = FastAPI(
     title="E-Commerce Search Engine",
     lifespan=lifespan,
@@ -60,4 +64,5 @@ if settings.cors_origins:
         expose_headers=["X-Request-ID", "Retry-After"],
     )
 app.include_router(health_router)
+app.include_router(metrics_router)
 app.include_router(v1_router, prefix="/api/v1")

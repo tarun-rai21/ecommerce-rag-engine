@@ -1,0 +1,11 @@
+# Scrapes the local backend. For a deployment with METRICS_TOKEN set, add:
+#   authorization: {credentials: <token>}
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: rag-backend
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["backend:8000"]

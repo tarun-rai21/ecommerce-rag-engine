@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = ""  # comma-separated browser origins allowed to call the API; empty = none
     DOCS_ENABLED: bool = True  # /docs, /redoc and /openapi.json
 
+    # ── Observability ─────────────────────────────────────
+    METRICS_TOKEN: str = ""  # if set, /metrics needs "Authorization: Bearer <token>"; empty = open
+    LOG_FORMAT: str = Field(default="text", pattern="^(text|json)$")  # json: one JSON object per line
+    LOG_LEVEL: str = "INFO"
+
     def qdrant_client_kwargs(self) -> dict:
         """Connection arguments for QdrantClient / AsyncQdrantClient (gRPC either way)."""
         if self.QDRANT_URL:

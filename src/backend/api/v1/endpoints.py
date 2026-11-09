@@ -7,6 +7,7 @@ from pydantic import ValidationError
 
 from src.backend.api.errors import ApiError
 from src.backend.api.security import rate_limit
+from src.backend.metrics import ANSWERS, LLM_TOKENS, observe_stage
 from src.backend.models.api_schemas import (
     AskResponseEnvelope,
     FacetResponse,
@@ -146,6 +147,7 @@ async def search_products(
     raw_results = await _search_or_503(service.search(
         query=resolved.text, limit=request.limit, filters=resolved.filters, prefer_size=resolved.size,
     ))
+    observe_stage("search", _ms(start))
 
     results = [
         ProductSearchResult(
@@ -199,11 +201,13 @@ async def ask_products(
     )
     cached = await cache_service.get(cache_key)
     cache_ms = _ms(cache_start)
+    observe_stage("cache_lookup", cache_ms)
 
     if cached:
         try:
             envelope = AskResponseEnvelope.model_validate_json(cached)
             logger.info(f"[CACHE HIT] query='{request.q}'")
+            ANSWERS.labels("cache").inc()
             return envelope.model_copy(update={
                 "source": "cache",
                 "timing": TimingBreakdown(
@@ -221,8 +225,10 @@ async def ask_products(
         query=resolved.text, limit=request.limit, filters=resolved.filters, prefer_size=resolved.size,
     ))
     search_ms = _ms(search_start)
+    observe_stage("search", search_ms)
 
     if not raw_results:
+        ANSWERS.labels("no_results").inc()
         return AskResponseEnvelope(
             answer=REFUSAL_MESSAGE,
             source="no_results",
@@ -242,6 +248,12 @@ async def ask_products(
         query=request.q, context=build_context(raw_results, resolved.filters, resolved.size),
     )
     llm_ms = _ms(llm_start)
+    observe_stage("llm", llm_ms)
+    ANSWERS.labels("llm" if llm_result.ok else "llm_error").inc()
+    if llm_result.prompt_tokens is not None:
+        LLM_TOKENS.labels("prompt").inc(llm_result.prompt_tokens)
+    if llm_result.completion_tokens is not None:
+        LLM_TOKENS.labels("completion").inc(llm_result.completion_tokens)
 
     envelope = AskResponseEnvelope(
         answer=llm_result.answer,
