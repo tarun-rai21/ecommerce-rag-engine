@@ -38,7 +38,8 @@ async def lifespan(app: FastAPI):
     if (await app.state.cache_service.ping())[0]:
         logger.info("Redis reachable.")
     app.state.llm_service = LLMService()
-    app.state.feedback_store = FeedbackStore(app.state.cache_service.client)
+    app.state.feedback_store = FeedbackStore(app.state.cache_service.client,
+                                            available=lambda: app.state.cache_service.available)
     yield
     logger.info("Shutting down.")
     await app.state.search_service.close()

@@ -2,7 +2,7 @@
 # pre-commit run --all-files
 # Data files are left byte-for-byte as recorded (the labelled answers keep markdown
 # line-break spaces), so the whitespace hooks skip them.
-exclude: '^(data/|src/evaluation/.*\.(csv|json)$)'
+exclude: '^(data/|results/|src/evaluation/.*\.(csv|json)$)'
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.20  # same version as CI and requirements-dev.txt

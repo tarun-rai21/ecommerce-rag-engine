@@ -72,3 +72,15 @@ def test_redis_down_answers_still_work_but_feedback_is_503(make_client):
 def test_feedback_needs_the_api_key(make_client, monkeypatch):
     monkeypatch.setattr(settings, "API_KEYS", "k")
     assert make_client().post("/api/v1/feedback", json={"request_id": "r1", "rating": "up"}).status_code == 401
+
+
+def test_recording_is_skipped_while_the_cache_breaker_is_open():
+    import asyncio
+
+    from src.backend.services.feedback import FeedbackStore
+    from tests.fakes import FakeRedis
+
+    redis = FakeRedis()
+    store = FeedbackStore(redis, available=lambda: False)
+    asyncio.run(store.record_interaction("r-1", {"query": "rug"}))
+    assert redis.store == {}  # Redis wasn't touched

@@ -3,7 +3,9 @@ import math
 import time
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from groq import RateLimitError
 
 from src.backend.services.cache import CacheService
 from src.backend.services.llm import UNAVAILABLE_MESSAGE, LLMService
@@ -101,35 +103,63 @@ def test_keyword_coverage():
 
 
 # ── LLM service ───────────────────────────────────────────
-def _fake_groq(content):
-    create = lambda **kw: SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
-    return SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+def _fake_groq(content, finish_reason="stop", usage=None, fail_times=0):
+    """An AsyncGroq stand-in: `fail_times` rate-limit errors first, then the response."""
+    calls = {"n": 0}
+
+    async def create(**kw):
+        calls["n"] += 1
+        if calls["n"] <= fail_times:
+            raise RateLimitError("slow down", response=httpx.Response(429, request=httpx.Request("POST", "http://x")),
+                                 body=None)
+        message = SimpleNamespace(content=content)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish_reason)], usage=usage)
+    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+    client.calls = calls
+    return client
+
+
+def _answer(client):
+    return asyncio.run(LLMService(async_client=client).generate_answer("q", "ctx"))
 
 
 def test_llm_success():
-    result = asyncio.run(LLMService(client=_fake_groq(" hello ")).generate_answer("q", "ctx"))
-    assert result.ok and result.answer == "hello"
+    result = _answer(_fake_groq(" hello "))
+    assert result.ok and result.answer == "hello" and not result.truncated
 
 
 def test_llm_reports_token_usage():
-    create = lambda **kw: SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content="hi"))],
-        usage=SimpleNamespace(prompt_tokens=1200, completion_tokens=340))
-    client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    result = asyncio.run(LLMService(client=client).generate_answer("q", "ctx"))
+    result = _answer(_fake_groq("hi", usage=SimpleNamespace(prompt_tokens=1200, completion_tokens=340)))
     assert (result.prompt_tokens, result.completion_tokens) == (1200, 340)
-    assert asyncio.run(LLMService(client=_fake_groq("hi")).generate_answer("q", "c")).prompt_tokens is None
+    assert _answer(_fake_groq("hi")).prompt_tokens is None
 
 
 def test_llm_strips_think_block():
-    result = asyncio.run(LLMService(client=_fake_groq("<think>plan</think>\n Answer")).generate_answer("q", "c"))
+    result = _answer(_fake_groq("<think>plan</think>\n Answer"))
     assert result.ok and result.answer == "Answer"
 
 
 @pytest.mark.parametrize("content", [None, "   ", "<think>only thinking</think>"])
 def test_llm_empty_content_is_a_failure(content):
-    result = asyncio.run(LLMService(client=_fake_groq(content)).generate_answer("q", "ctx"))
+    result = _answer(_fake_groq(content))
     assert not result.ok and result.answer == UNAVAILABLE_MESSAGE
+
+
+def test_llm_flags_an_answer_cut_off_at_max_tokens():
+    result = _answer(_fake_groq("| Rug A | $99 |\n| Rug", finish_reason="length"))
+    assert result.ok and result.truncated
+
+
+def test_llm_retries_rate_limits(monkeypatch):
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    client = _fake_groq("hi", fail_times=2)
+    assert _answer(client).ok and client.calls["n"] == 3
+    client = _fake_groq("hi", fail_times=3)
+    assert not _answer(client).ok and client.calls["n"] == 3
+
+
+async def _no_sleep(_):
+    return None
 
 
 # ── Managed-service connection settings ───────────────────

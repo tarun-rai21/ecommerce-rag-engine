@@ -9,11 +9,14 @@ deterministic and testable, and they don't depend on a rate-limited API. The cos
 of a false positive (filtering out good results) is high, so the rules are strict:
 
 - A number is a price only with a currency marker ($, dollars, usd, bucks) or when
-  it directly follows a price phrase (under, less than, between …) and is NOT
-  followed by a unit (inch, ft, drawer, light, piece …). "48 inch vanity",
-  "twin over full bunk beds" and "end table between recliners" yield nothing.
-- A rating needs an explicit "N stars", "N+ stars" or "rated N+". "star wars rug"
-  yields nothing.
+  it directly follows a strong price word (under, below, less than, cheaper than,
+  between) and is NOT followed by a unit (inch, ft, drawer, light, piece …). Weak
+  words (up to, within, max, at most) need a currency marker: "dining table seats up
+  to 8" is a capacity, not an $8 budget. "48 inch vanity", "twin over full bunk beds"
+  and "end table between recliners" yield nothing.
+- A rating needs "N stars", "N+ stars", "at least N stars" or "rated N+". "star wars
+  rug" and "5 star hotel towels" (a style, singular) yield nothing.
+- A room size ("8x10") is read only in rug queries; elsewhere it stays in the text.
 
 Categories are deliberately NOT inferred from text: a wrong category filter hides
 good results, and ranking already handles category semantics. Categories come
@@ -39,7 +42,11 @@ _UNIT_AFTER = (
 _PRICE_STRICT = rf"(?:{_CURRENCY_BEFORE}\s*{_NUM}|{_NUM}{_CURRENCY_AFTER})"
 _PRICE_LOOSE = rf"(?:{_CURRENCY_BEFORE}?\s*{_NUM}{_CURRENCY_AFTER}?){_UNIT_AFTER}"
 
-_MAX_WORDS = r"(?:under|below|less than|cheaper than|up to|no more than|at most|max(?:imum)?|within)"
+# Strong words almost always introduce a price ("sofa under 500"), so a bare number is
+# accepted after them. Weak words often introduce a count or capacity ("seats up to 8",
+# "within 5 days"), so after them the number needs a currency marker.
+_MAX_STRONG = r"(?:under|below|less than|cheaper than)"
+_MAX_WEAK = r"(?:up to|no more than|at most|max(?:imum)?|within)"
 _MIN_WORDS = r"(?:over|above|more than|at least|min(?:imum)?|starting at|from)"
 _FILLER = r"(?:\s*(?:priced|costing|for|that costs?|price|budget|of)\s*)?"
 
@@ -49,7 +56,8 @@ _RANGE = re.compile(
     re.I,
 )
 _MAX = re.compile(
-    rf"{_FILLER}\b{_MAX_WORDS}\s*{_PRICE_LOOSE}"
+    rf"{_FILLER}\b{_MAX_STRONG}\s*{_PRICE_LOOSE}"
+    rf"|{_FILLER}\b{_MAX_WEAK}\s*{_PRICE_STRICT}"
     rf"|{_PRICE_STRICT}\s*(?:or less|or under|and under|or below|max)\b",
     re.I,
 )
@@ -58,8 +66,14 @@ _MIN = re.compile(
     rf"|{_PRICE_STRICT}\s*(?:\+|or more|and up|and above|or above)",
     re.I,
 )
+# A rating needs more than "N star": "5 star hotel towels" describes a style, not a
+# filter. Accepted: a qualifier before ("at least 4 stars", "rated 4 stars"), a "+"
+# ("4+ stars"), a qualifier after ("4 stars and up"), or the plural "4 stars".
 _RATING = re.compile(
-    r"(?:\b(?:at least|rated|min(?:imum)?)\s*)?\b([1-5](?:\.\d)?)\s*\+?\s*stars?\b(?:\s*(?:and up|or more|or higher|\+))?"
+    r"\b(?:at least|rated|min(?:imum)?)\s*([1-5](?:\.\d)?)\s*\+?\s*stars?\b(?:\s*(?:and up|or more|or higher|\+))?"
+    r"|\b([1-5](?:\.\d)?)\s*\+\s*stars?\b(?:\s*(?:and up|or more|or higher))?"
+    r"|\b([1-5](?:\.\d)?)\s*stars?\s*(?:and up|or more|or higher|\+)"
+    r"|\b([1-5](?:\.\d)?)\s*stars\b"
     r"|\brated\s*([1-5](?:\.\d)?)\s*(?:\+|or (?:more|higher|above)|and up)",
     re.I,
 )
@@ -71,6 +85,9 @@ _FEET_PAIR = re.compile(
     r"(?<![\d.])(\d{1,2})\s*(?:'|ft\b|feet\b)?\s*(?:x|×|by)\s*(\d{1,2})(?:\s*(?:'|ft\b|feet\b))?(?![\d.])", re.I,
 )
 MAX_ROOM_FEET = 15
+# Only rugs are sold in room sizes. In other queries "4x6" is usually inches ("4x6 picture
+# frame") and must stay in the search text, where it can match the title.
+_RUG_WORDS = re.compile(r"\b(?:rugs?|carpets?|runners?|mats?)\b", re.I)
 
 
 class SearchFilters(BaseModel):
@@ -137,7 +154,7 @@ def parse_query(query: str) -> ParsedQuery:
         min_price = _numbers(m)[0]
         text = _remove(text, m)
     if m := _RATING.search(text):
-        min_rating = float(m.group(1) or m.group(2))
+        min_rating = float(next(g for g in m.groups() if g))
         text = _remove(text, m)
 
     if min_price is not None and max_price is not None and min_price > max_price:
@@ -146,7 +163,8 @@ def parse_query(query: str) -> ParsedQuery:
     cleaned = re.sub(r"\s+", " ", text).strip(" ,.-")
     cleaned = re.sub(r"\b(?:and|with|for|that|priced|costing)$", "", cleaned, flags=re.I).strip(" ,.-")
     size = None
-    if (m := _FEET_PAIR.search(cleaned)) and max(int(m.group(1)), int(m.group(2))) <= MAX_ROOM_FEET:
+    if ((m := _FEET_PAIR.search(cleaned)) and max(int(m.group(1)), int(m.group(2))) <= MAX_ROOM_FEET
+            and _RUG_WORDS.search(cleaned)):
         without = re.sub(r"\s+", " ", _remove(cleaned, m)).strip(" ,.-")
         if without:  # a query that is only a size still needs text to search with
             a, b = sorted((int(m.group(1)), int(m.group(2))))

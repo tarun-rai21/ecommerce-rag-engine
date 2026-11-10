@@ -301,7 +301,10 @@ def main(argv: list[str] | None = None) -> None:
                             sparse_name=SPARSE_VECTOR_NAME, dense_name=DENSE_VECTOR_NAME)
         if problems:
             # The alias still points at the old version: nothing changed for the API.
-            raise SystemExit(f"Not promoting '{args.collection}': " + "; ".join(problems))
+            # Delete the failed build: left in place, --rollback (which picks the newest
+            # version below the current one) could later switch to it.
+            client.delete_collection(args.collection)
+            raise SystemExit(f"Not promoting '{args.collection}' (deleted it): " + "; ".join(problems))
         promote(client, alias, args.collection, keep=args.keep, replace_collection=args.replace_collection)
 
 

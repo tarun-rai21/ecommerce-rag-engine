@@ -13,6 +13,7 @@ or fail an answer; storing a rating reports failures, because the caller is wait
 import asyncio
 import json
 import time
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -36,16 +37,20 @@ class FeedbackUnavailable(Exception):
 
 
 class FeedbackStore:
-    def __init__(self, client, op_timeout: float = 0.25, write_timeout: float = 2.0) -> None:
+    def __init__(self, client, op_timeout: float = 0.25, write_timeout: float = 2.0,
+                 available: Callable[[], bool] = lambda: True) -> None:
         self.client = client
         self.op_timeout, self.write_timeout = op_timeout, write_timeout
+        # The cache's circuit breaker: while it has Redis marked down, recording is skipped,
+        # so an outage doesn't add a timed-out write to every answer.
+        self.available = available
 
     @property
     def ttl_seconds(self) -> int:
         return settings.FEEDBACK_RETENTION_DAYS * 86400
 
     async def record_interaction(self, request_id: str | None, record: dict) -> None:
-        if not request_id:
+        if not request_id or not self.available():
             return
         try:
             await asyncio.wait_for(

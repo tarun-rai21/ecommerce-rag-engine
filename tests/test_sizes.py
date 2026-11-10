@@ -65,6 +65,9 @@ def test_sizes_stay_out_of_the_search_text():
     ("black frame 22 x 36", "black frame 22 x 36", None),  # inches: stay in the text
     ("blk 18x18 seat cushions", "blk 18x18 seat cushions", None),
     ("side by side drawer", "side by side drawer", None),
+    ("4x6 picture frame", "4x6 picture frame", None),  # not a rug: inches, keep in the text
+    ("2x3 bath mat", "bath mat", "2x3"),
+    ("carpet 5x6", "carpet", "5x6"),
 ])
 def test_query_size_is_separated_from_text(query, text, size):
     parsed = parse_query(query)

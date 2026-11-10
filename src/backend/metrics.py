@@ -26,7 +26,7 @@ REQUEST_LATENCY = Histogram(
 
 # Pipeline stages of /search and /ask.
 STAGE_LATENCY = Histogram(
-    "rag_stage_duration_seconds", "Latency of one pipeline stage", ["stage"],  # cache_lookup | search | llm
+    "rag_stage_duration_seconds", "Latency of one pipeline stage", ["stage"],  # cache_lookup | search | llm | llm_first_token | total (whole answer)
     buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30),
 )
 ANSWERS = Counter("rag_answers_total", "/ask responses by where the answer came from",

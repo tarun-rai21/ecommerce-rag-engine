@@ -6,7 +6,7 @@
 
 > Free hosting: the backend sleeps after 15 minutes without traffic, so the first search after a quiet spell can take about a minute while it wakes. Searches after that take well under a second plus the LLM call. Try "grey area rug 8x10" or "mid-century coffee table under $300".
 
-A production-grade hybrid search and Retrieval-Augmented Generation (RAG) engine for e-commerce product discovery. Built with FastAPI, Qdrant, FastEmbed, Groq LLM, Redis, and Streamlit — fully containerized with Docker Compose.
+A deployed, monitored hybrid search and Retrieval-Augmented Generation (RAG) engine for e-commerce product discovery, built with production practices (evaluation on human labels, caching, rate limits, metrics, zero-downtime re-indexing) and run on free-tier services. Built with FastAPI, Qdrant, FastEmbed, Groq LLM, Redis, and Streamlit — fully containerized with Docker Compose.
 
 ---
 
@@ -22,7 +22,7 @@ Most RAG tutorials wire a single dense vector search to an LLM and call it done.
 
 This system solves both by running dense and sparse retrieval in parallel and fusing results using Reciprocal Rank Fusion (RRF) — balancing semantic understanding with keyword precision.
 
-**Measured result:** on held-out queries from the human-labelled Wayfair WANDS benchmark (42,994 products), hybrid retrieval scores **nDCG@10 = 0.726 vs 0.675 for dense-only** (+0.051, 95% CI [+0.034, +0.067]). See [Evaluation Results](#evaluation-results).
+**Measured result:** on held-out queries from the human-labelled Wayfair WANDS benchmark (42,994 products), hybrid retrieval scores **nDCG@10 = 0.725 vs 0.672 for dense-only** (+0.053, 95% CI [+0.036, +0.069]). See [Evaluation Results](#evaluation-results).
 
 ### Dataset: Wayfair WANDS
 The catalog is [WANDS](https://github.com/wayfair/WANDS) (Wayfair ANnotation DataSet, MIT licence): **42,994 furniture and home products, 480 real search queries and 233,448 human relevance judgments** (Exact / Partial / Irrelevant). Having judgments written by someone other than the system's author is what makes the evaluation meaningful.
@@ -113,9 +113,9 @@ $$
 RRF\_Score(d) = \sum_m \frac{1}{k + r_m(d)}
 $$
 
-Where `k` is a smoothing constant and `r_m(d)` is the 1-based rank of document `d` in retrieval model `m`. Fusion runs server-side in Qdrant (`RrfQuery(rrf=Rrf(k=30))` over two `Prefetch` legs of 100 candidates each). A client-side implementation with the same `k` is available via `USE_NATIVE_FUSION=false`, and a test asserts both paths rank identically.
+Where `k` is a smoothing constant and `r_m(d)` is the position of document `d` in retrieval model `m`'s list, **counted from 0, as Qdrant does**. Fusion runs server-side in Qdrant (`RrfQuery(rrf=Rrf(k=30))` over two `Prefetch` legs of 100 candidates each). In the textbook form, which counts ranks from 1, this is `k = 29`. A client-side implementation is available via `USE_NATIVE_FUSION=false`; a test checks its scores against `qdrant_client`'s own fusion code. (An earlier version counted from 1. Against the server it disagreed with native fusion on 8 of 80 dev queries' top 10, which the 39-product test catalog didn't show.)
 
-Fusing ranks instead of scores avoids calibrating cosine similarity against BM25 scores, which live on different scales. `k` sets the trade-off between *agreement* and *top rank*: with a small `k` (Qdrant's default is 2) a document ranked 1st by one retriever ties with one ranked 4th by both; with a large `k` the document both retrievers agree on wins.
+Fusing ranks instead of scores avoids calibrating cosine similarity against BM25 scores, which live on different scales. `k` sets the trade-off between *agreement* and *top rank*: with a small `k` (Qdrant's default is 2) a document ranked 1st by one retriever ties with one ranked 3rd by both; with a large `k` the document both retrievers agree on wins.
 
 **Tuning (dev split only).** A 4×3 grid over `k ∈ {10, 30, 60, 100}` and candidates per leg `∈ {20, 50, 100}` was scored on the dev queries; `k=30`, 100 candidates had the best nDCG@10. Nearly all of the gain came from the candidate count (20 → 50: about +0.015 nDCG@10 at every `k`); differences between `k` values were within noise (< 0.005). On the untouched test split, the tuned setting scored 0.728 vs 0.701 for the common default (`k=60`, 20 candidates), both measured before the latest index rebuild.
 
@@ -123,8 +123,8 @@ Fusing ranks instead of scores avoids calibrating cosine similarity against BM25
 
 ### 4. Response Caching (Redis)
 - Redis with a 5-minute TTL caches the **full `/ask` response** (answer + retrieved products), so a cache hit returns exactly what the original request did
-- Keys: `rag:<cache version>:ask:limit=<n>:<md5(normalized query)>`. Normalization (lowercase, trimmed, whitespace collapsed) makes "Waterproof  Bag" and "waterproof bag" share an entry; the version prefix is bumped on re-index so stale answers are never served
-- Only successful LLM answers are cached, never fallback messages
+- Keys: `rag:<cache version>:ask:<params>:<md5(normalized query)>`, where the params are everything that changes the answer: result count, filters, room size, whether parsing was on, the active index version, and a fingerprint of the model, prompt and generation settings. Normalization (lowercase, trimmed, whitespace collapsed) makes "Waterproof  Bag" and "waterproof bag" share an entry. A re-index or a prompt change therefore never serves an old answer
+- Only complete, successful LLM answers are cached: never fallback messages, and never an answer cut off at the token limit
 - **Fail-open with a circuit breaker:** each Redis call has a 250 ms budget. A connection error bypasses the cache for 30 s, so an outage costs one failed call rather than one per request. Timeouts bypass it only after 5 in a row, because under load a single late call usually means a busy event loop, not a failed Redis (see the [load test](#load-test))
 - Measured under load: a cache hit takes about 2 ms in the server and a median 52 ms at the client (most of it Docker Desktop's port forwarding on Windows), against a median 751 ms for a miss, which calls the LLM
 
@@ -137,13 +137,14 @@ Shoppers write constraints into the query: "grey area rug under $150", "desk lam
 "desk lamp 4.5+ stars"                        → text "desk lamp",         min_rating 4.5
 ```
 
-- **Rules, not an LLM.** Price and rating constraints are numeric patterns, so rules are instant, free, deterministic and unit-testable, with no dependency on a rate-limited API. They're strict because a false positive silently hides good products. A number is a price only with a currency marker or directly after a price phrase, and never when followed by a unit ("48 inch vanity", "5 drawer dresser"). Positional words don't trigger ("twin **over** full bunk beds", "end table **between** recliners"). A test asserts that **none of the 480 real WANDS queries** produces a constraint.
+- **Rules, not an LLM.** Price and rating constraints are numeric patterns, so rules are instant, free, deterministic and unit-testable, with no dependency on a rate-limited API. They're strict because a false positive silently hides good products. A number is a price only with a currency marker, or directly after a strong price word ("under", "below", "less than", "between"), and never when followed by a unit ("48 inch vanity", "5 drawer dresser"). Weak words such as "up to", "within" and "max" need a currency marker, because they often introduce a count: "dining table seats up to 8" is not an $8 budget. A rating needs "4 stars", "4+ stars" or "rated 4+"; "5 star hotel towels" describes a style. Positional words don't trigger ("twin **over** full bunk beds", "end table **between** recliners"). A test asserts that **none of the 480 real WANDS queries** produces a constraint.
+- **A bug found in review:** an earlier version accepted a bare number after any of these words, so "dining table seats up to 8" searched with an $8 cap and returned wall art. The weak/strong split and regression tests for these queries fixed it.
 - **Categories are not guessed from text.** A wrong category filter hides good results, and ranking already handles category meaning. Categories come from explicit facet filters (UI controls), populated from Qdrant's facet API (`GET /api/v1/facets`).
 - **Pre-filtering, not post-filtering.** The Qdrant filter is applied inside each prefetch leg, so dense and BM25 each return their best *matching* candidates before fusion. Filtering after fusion would leave gaps (see the benchmark below).
 - **Explicit filters override parsed ones** field by field, and the response reports `interpreted_query` and `applied_filters` so the UI can show what was searched. Filters are part of the cache key. The LLM is told which filters were applied, so it doesn't refuse with "I can't confirm the price".
 - Products without a rating never match a rating filter: an unknown rating isn't evidence of a good one.
 
-**Sizes are a preference, not a filter.** "grey area rug 8x10" searches for "grey area rug", then moves products sold in that size to the front of the query's 15 best matches. A hard filter would hide most suitable rugs, because only about 40% of rugs list a size. Catalog sizes rarely read the way shoppers write them, so they're rounded to the nearest foot: a 7' 10" × 10' 2" rug counts as an 8x10. Only room-scale pairs are read as sizes (both numbers at most 15 ft), and the response reports `preferred_size`.
+**Sizes are a preference, not a filter.** "grey area rug 8x10" searches for "grey area rug", then moves products sold in that size to the front of the query's 15 best matches. A hard filter would hide most suitable rugs, because only about 40% of rugs list a size. Catalog sizes rarely read the way shoppers write them, so they're rounded to the nearest foot: a 7' 10" × 10' 2" rug counts as an 8x10. Only room-scale pairs in rug queries (rug, carpet, runner, mat) are read as sizes, with both numbers at most 15 ft; elsewhere the size stays in the search text, so "4x6 picture frame" still matches frames titled 4x6. The response reports `preferred_size`.
 
 ### 6. CPU-Only Embedding (FastEmbed)
 FastEmbed runs ONNX-optimized models locally with zero GPU requirement:
@@ -279,7 +280,7 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
 |---|---|
 | `rag_requests_total{route,method,status}` | Traffic and error rate per route |
 | `rag_request_duration_seconds{route}` | Latency histogram per route |
-| `rag_stage_duration_seconds{stage}` | Where `/ask` time goes: `cache_lookup`, `search` (includes query embedding), `llm` |
+| `rag_stage_duration_seconds{stage}` | Where `/ask` time goes: `cache_lookup`, `search` (includes query embedding), `llm`, `llm_first_token`, and `total` (question received to answer complete, for `/ask` and `/ask/stream`) |
 | `rag_answers_total{source}` | Answers from `llm`, `cache`, `no_results`, or `llm_error` (the shopper got the fallback) |
 | `rag_llm_tokens_total{type}` | Billed prompt and completion tokens, which give spend at the provider's price |
 | `rag_cache_lookups_total{result}` | `hit`, `miss`, `error`, `bypassed` (breaker open) |
@@ -288,8 +289,8 @@ docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
 
 Labels only ever hold route templates and fixed values, never query text or ids, so the number of series stays bounded. A scanner probing random paths adds to `route="unmatched"`, not one series per path. Every known label value is created at 0 on startup. Otherwise a series would first appear with a non-zero value, and `rate()` would miss its first events.
 
-**Dashboard.** `observability/grafana/dashboards/rag-engine.json` is generated by `observability/build_dashboard.py` and provisioned into Grafana with the Prometheus data source. It has 13 panels:
-- headline stats: requests/s, 5xx rate, p95 `/ask` latency, cache hit ratio, estimated LLM cost per hour, breaker state;
+**Dashboard.** `observability/grafana/dashboards/rag-engine.json` is generated by `observability/build_dashboard.py` and provisioned into Grafana with the Prometheus data source. It has 14 panels:
+- headline stats: requests/s, 5xx rate, p95 answer latency, cache hit ratio, estimated LLM cost per hour, breaker state;
 - traffic and latency by route;
 - p95 latency by stage;
 - answers by source;
@@ -472,7 +473,7 @@ event: done   data: {"source": "llm", "timing": {...}, "usage": {...}, "time_to_
 ```
 
 - **Text is released in whole sentences or table rows.** The rule that removes whole-catalog claims ("these are the only ones…") needs complete sentences, so a partial sentence is held back until it ends. A claim is never shown and then retracted. Fed the 110 evaluation answers plus edge cases in random-sized pieces, the streamed text matched `clean_output` exactly.
-- **Failures:** if the stream can't start (rate limit, connection), the fallback message is sent as the answer and `done` reports `llm_error`. A failure part-way through sends an `error` event and then `done`. An error before streaming begins, such as a search outage, is a normal JSON error response.
+- **Failures:** if the stream can't start (rate limit, connection) or the model writes no answer text, the fallback message is sent as the answer and `done` reports `llm_error`. A failure part-way through sends an `error` event and then `done`. An error before streaming begins, such as a search outage, is a normal JSON error response. An answer cut off at the token limit (which for gpt-oss includes its reasoning) is shown but not cached.
 - **Caching:** a completed answer is cached under the same key as `/ask`, so either endpoint serves it.
 - **Disconnects:** if the client goes away, the upstream LLM request is closed rather than left running.
 - **Measured:** a table answer locally showed its first row at 0.68 s and finished at 0.97 s. gpt-oss reasons before it writes, so most of the wait comes before the first token, and streaming mainly helps longer answers and gives visible progress. Time to first token is the `llm_first_token` stage in the metrics.
@@ -515,16 +516,16 @@ The script runs the production `ProductSearchService` in-process (no HTTP, no ca
 
 | Mode | nDCG@10 | Recall@100 | MRR@10 | P@10 | judged@10 | Search p50 / p95 |
 |---|---|---|---|---|---|---|
-| Dense only | 0.675 [0.641, 0.709] | 0.624 [0.578, 0.665] | 0.658 [0.606, 0.708] | 0.454 [0.406, 0.502] | 0.79 | 13 / 16 ms |
-| BM25 only | 0.659 [0.622, 0.696] | 0.659 [0.612, 0.701] | 0.723 [0.672, 0.771] | 0.460 [0.414, 0.506] | 0.79 | 9 / 12 ms |
-| **Hybrid (RRF)** | **0.726 [0.693, 0.758]** | **0.675 [0.629, 0.715]** | **0.740 [0.691, 0.786]** | **0.493 [0.444, 0.540]** | 0.85 | 14 / 19 ms |
+| Dense only | 0.672 [0.638, 0.706] | 0.622 [0.575, 0.665] | 0.652 [0.600, 0.702] | 0.451 [0.404, 0.500] | 0.79 | 15 / 30 ms |
+| BM25 only | 0.659 [0.622, 0.696] | 0.659 [0.612, 0.701] | 0.723 [0.672, 0.771] | 0.460 [0.414, 0.506] | 0.79 | 9 / 16 ms |
+| **Hybrid (RRF)** | **0.725 [0.692, 0.757]** | **0.675 [0.629, 0.714]** | **0.736 [0.686, 0.783]** | **0.492 [0.444, 0.539]** | 0.85 | 15 / 26 ms |
 
-Paired difference vs dense: **hybrid nDCG@10 +0.051 [+0.034, +0.067]**, Recall@100 +0.051 [+0.026, +0.076], both significant. BM25 alone vs dense: nDCG@10 −0.017 [−0.044, +0.009] (not significant). For reference, hybrid with the untuned default (`k=60`, 20 candidates) scored nDCG@10 0.701 on test (measured before the tie-breaking fix and the latest index rebuild).
+Paired difference vs dense: **hybrid nDCG@10 +0.053 [+0.036, +0.069]**, Recall@100 +0.053 [+0.028, +0.077], both significant. BM25 alone vs dense: nDCG@10 −0.013 [−0.042, +0.013] (not significant). The summary of this run is in [`results/`](results/). For reference, hybrid with the untuned default (`k=60`, 20 candidates) scored nDCG@10 0.701 on test (measured before the tie-breaking fix and the latest index rebuild).
 
-**Reproducibility.** RRF often produces exact score ties (a product ranked *r*-th by dense alone scores the same as one ranked *r*-th by BM25 alone), and Qdrant returns tied points in an order that varies between runs. That shifted nDCG@10 by up to ±0.002 between identical runs. Both fusion paths and the single-retriever baselines now break ties by product id (fetching a few extra results so a tie at the cut-off can't change the set). Two consecutive test runs now produce identical top-10s for every query in every mode. Rebuilding the index from scratch can still move scores by a few thousandths (hybrid went from 0.728 to 0.726), so differences that small aren't meaningful. Latency columns vary with machine load and are indicative only.
+**Reproducibility.** RRF often produces exact score ties (a product ranked *r*-th by dense alone scores the same as one ranked *r*-th by BM25 alone), and Qdrant returns tied points in an order that varies between runs. That shifted nDCG@10 by up to ±0.002 between identical runs. Both fusion paths and the single-retriever baselines now break ties by product id (fetching a few extra results so a tie at the cut-off can't change the set). Two consecutive test runs now produce identical top-10s for every query in every mode. Rebuilding the index from scratch can still move scores by a few thousandths (hybrid went from 0.728 to 0.726), and so can restarting Qdrant: after a restart, dense went from 0.675 to 0.672 and hybrid from 0.726 to 0.725, while BM25 was unchanged. Dense search uses an approximate (HNSW) index and BM25 an exact one, which is the likely reason. Differences that small aren't meaningful. Latency columns vary with machine load and are indicative only.
 
 **How the metrics are defined:**
-- **nDCG@10** (primary) uses graded gains: Exact = 2, Partial = 1.
+- **nDCG@10** (primary) uses graded labels Exact = 2, Partial = 1 with exponential gain 2^g − 1, so an Exact product weighs 3 and a Partial one 1.
 - **Recall@100, MRR@10 and P@10** treat only *Exact* as relevant, so they use the 237 test queries with at least one Exact judgment.
 - **Unjudged products count as irrelevant**, the standard convention for pooled judgments. **judged@10** is the share of the top 10 that has any judgment: around 80% here, so absolute scores are somewhat pessimistic for every mode.
 - **Duplicate judgments:** 1,467 (query, product) pairs are judged more than once and 14 disagree; the highest label is kept.
@@ -537,15 +538,18 @@ Paired difference vs dense: **hybrid nDCG@10 +0.051 [+0.034, +0.067]**, Recall@1
 python -m src.evaluation.filter_eval --split test
 ```
 
-WANDS queries never state a budget, so the benchmark adds one. For each test query with at least one Exact judgment, the budget **X = median synthetic price of its Exact products** (about half of them fit), and the query becomes "*query* under $X". A product counts as relevant only if it's judged relevant **and** priced ≤ X. All three systems use the same hybrid retrieval:
+WANDS queries never state a budget, so the benchmark adds one. For each test query with at least one Exact judgment, the budget **X = median synthetic price of its Exact products** (about half of them fit), and the query becomes "*query* under $X". A product keeps its judged gain (Exact or Partial) only if it's priced ≤ X. All systems use the same hybrid retrieval:
 
 | System (237 test queries) | nDCG@10 (budget-aware) | Over-budget results | Slots filled (of 10) |
 |---|---|---|---|
-| No parsing: search the raw text, no filter (previous behaviour) | 0.297 [0.268, 0.328] | 50.4% | 10.0 |
-| Post-filter: parse, search, then drop over-budget results | 0.391 [0.355, 0.426] | 0.0% | 5.0 |
-| **Pre-filter: parse, filter inside each prefetch (this system)** | **0.551 [0.503, 0.597]** | **0.0%** | **10.0** |
+| No parsing: search the raw text, no filter (previous behaviour) | 0.364 [0.336, 0.392] | 50.2% | 10.0 |
+| Post-filter, naive: parse, take the top 10, drop over-budget results | 0.479 [0.447, 0.509] | 0.0% | 4.9 |
+| Post-filter, over-fetch: parse, take the top 100, drop over-budget, keep 10 | 0.700 [0.662, 0.736] | 0.0% | 9.8 |
+| **Pre-filter: parse, filter inside each prefetch (this system)** | **0.711 [0.674, 0.747]** | **0.0%** | **10.0** |
 
-Pre-filtering vs no parsing: **+0.254 nDCG@10** [+0.224, +0.284]; vs post-filtering: **+0.160** [+0.140, +0.184]. Without parsing, half of what's shown is over budget. Post-filtering never violates the budget but leaves half the page empty. Prices are synthetic, so this measures filter mechanics, not real-world price behaviour.
+Pre-filtering vs no parsing: **+0.347 nDCG@10** [+0.319, +0.375]. Without parsing, half of what's shown is over budget. **Most of that gain comes from parsing the budget, not from where the filter runs:** a post-filter that over-fetches 100 candidates gets within 0.011 nDCG@10 of pre-filtering ([+0.003, +0.019], significant but small). Pre-filtering still guarantees a full page (a 100-candidate over-fetch left some queries short) and needs one search instead of a 10× larger one. Against the naive post-filter, which leaves half the page empty, the gap is +0.232 [+0.210, +0.256]. Prices are synthetic, so this measures filter mechanics, not real-world price behaviour.
+
+*Corrected in review:* an earlier version of this benchmark fetched prices only for Exact products, so 63% of the Partial judgments silently counted as irrelevant, and it compared only against the naive post-filter. Its numbers (0.297 / 0.391 / 0.551) are superseded by the table above.
 
 ### Room-size rug queries
 
@@ -557,10 +561,10 @@ python -m src.evaluation.size_eval
 
 | System | Results listing the size | Queries with at least one | Results mentioning the requested term | Results that are rugs |
 |---|---|---|---|---|
-| Size left in the search text | 15.0% [11.0%, 19.0%] | 65.0% [50.0%, 80.0%] | 99.0% [97.5%, 100%] | 95.5% [91.5%, 99.0%] |
-| **Size as a preference (this system)** | **53.5% [44.0%, 63.5%]** | **97.5% [92.5%, 100%]** | **98.5% [96.5%, 100%]** | **96.0% [91.5%, 99.0%]** |
+| Size left in the search text | 15.0% [11.0%, 19.0%] | 65.0% [50.0%, 80.0%] | 99.5% [98.5%, 100%] | 95.0% [90.5%, 99.0%] |
+| **Size as a preference (this system)** | **53.0% [43.5%, 63.5%]** | **97.5% [92.5%, 100%]** | **98.0% [96.0%, 99.5%]** | **96.5% [93.0%, 99.0%]** |
 
-Results listing the size rose by 38.5 points [+30.0, +47.0], and results mentioning the requested term changed by −0.5 points [−2.0, +1.0], which isn't significant. The re-ordering depth of 15 was chosen on these same 40 queries, so the numbers are somewhat optimistic.
+Results listing the size rose by 38.0 points [+29.5, +46.0], and results mentioning the requested term changed by −1.5 points [−4.0, +0.5], which isn't significant. The re-ordering depth of 15 was chosen on these same 40 queries, so the numbers are somewhat optimistic.
 
 **A design that was rejected.** Adding sizes to the search text first looked like a clear win: results listing the size rose from 15.5% to 92.5%, with nDCG@10 down only 0.002, which passed the rule set before the experiment. A further check showed the cost that metric hid: results mentioning the requested term fell from 98.5% to 82.5%, so "grey area rug 8x10" returned espresso and green rugs. Re-ordering all 100 candidates failed in a similar way (−8.5 points), which led to the depth of 15.
 
@@ -575,6 +579,8 @@ python -m src.evaluation.generation_eval --segments sized ooc --compare reports/
 ```
 
 `--segments` (`plain`, `constrained`, `ooc`, `sized`) runs part of the sample. The report is saved as `generation-subset_*`, so it's never mistaken for a full run. `--compare` prints paired changes on the shared items: refusals that flipped, and answers that gained or lost full support, with a CI. A full run is still needed before reporting numbers.
+
+> **Measured before the latest prompt fix.** A formatting error in the system prompt (rule 3 ran on from rule 2's line) was fixed after this run. (The parser was also tightened, but none of the evaluation queries is interpreted differently.) The numbers below come from the earlier prompt; re-run `python -m src.evaluation.generation_eval` (about 2 hours on Groq's free tier) before quoting them as current.
 
 110 queries go through the production path (parsing, hybrid search, context, generator): 50 WANDS dev queries, 20 more with a budget appended, 30 hand-written queries for products a home-goods catalog doesn't stock (each checked against the catalog's top results), and 10 rug queries with a room size. An LLM judge from a different model family (`qwen/qwen3.8-27b`) audits each answer against its context, and rule-based checks cover refusals, prices and wording. 95% bootstrap CIs.
 
@@ -714,7 +720,7 @@ Retrieval metrics were identical across repeated runs, including runs served ent
 - **Keyword coverage is not faithfulness.** It checks whether expected words appear in the answer, not whether the answer is supported by the retrieved products.
 
 #### Evaluation Gate
-The script exits with code `1` if Hit Rate@5 falls below `0.70` or any retrieval request fails. It's meant to be run in CI; no CI workflow is set up yet.
+The script exits with code `1` if Hit Rate@5 falls below `0.70` or any retrieval request fails. It needs a running backend with the demo catalog, so CI doesn't run it; CI runs the unit and integration tests instead.
 
 ---
 
@@ -839,6 +845,7 @@ ecommerce-rag-engine/
 ├── Makefile                  # Common tasks (make help)
 ├── .pre-commit-config.yaml   # ruff + file hygiene on commit and in CI
 ├── render.yaml               # Render Blueprint for the backend (free plan)
+├── results/                  # The evaluation and load-test reports the numbers above come from
 ├── benchmarks/
 │   ├── load_test.py          # Closed-loop load test: /search, /ask misses and hits
 │   └── cost.py               # Cost per 1,000 questions from recorded token usage

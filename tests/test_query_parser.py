@@ -25,6 +25,11 @@ WANDS_QUERIES = REPO_ROOT / "data" / "wands" / "query.csv"
     ("desk lamp at least 4.5 stars", "desk lamp", None, None, 4.5),
     ("desk lamp rated 4+", "desk lamp", None, None, 4.0),
     ("patio set under $800 with 4 stars and up", "patio set", None, 800, 4.0),
+    ("dining table up to $900", "dining table", None, 900, None),
+    ("lamp max $60", "lamp", None, 60, None),
+    ("rug within $200", "rug", None, 200, None),
+    ("desk lamp 4 stars", "desk lamp", None, None, 4.0),
+    ("desk lamp 4 star and up", "desk lamp", None, None, 4.0),
 ])
 def test_parses_constraints(query, text, min_price, max_price, min_rating):
     parsed = parse_query(query)
@@ -48,6 +53,13 @@ def test_parses_constraints(query, text, min_price, max_price, min_rating):
     "zachary 72.5",
     "over 200 thread count sheets",    # 'over' needs a currency marker
     "wisdom stone river 3-3/4",
+    # Found in the audit: weak price words with a bare number are capacities, not budgets.
+    "dining table seats up to 8",
+    "table for up to 8",
+    "bookcase within 5",
+    "lamp max 60",
+    "5 star hotel towels",             # a style, not a rating filter
+    "3 star",
 ])
 def test_no_false_positives(query):
     parsed = parse_query(query)
