@@ -9,10 +9,14 @@ Systems (all hybrid retrieval, production settings):
   A  no_parsing   search the raw text "<query> under $X", no filter (old behaviour)
   B  post_filter  parse, search the cleaned text, then drop over-budget results
                   from the top 10 (common shortcut; leaves gaps)
+  B' post_filter_overfetch
+                  parse, fetch the top 100 for the cleaned text, drop over-budget
+                  results, keep the first 10 (the fair version of B)
   C  pre_filter   parse, search the cleaned text with a Qdrant price filter applied
                   inside each prefetch (this system)
 
-Metrics: nDCG@10 with constraint-aware gains, violation rate (share of returned
+Metrics: nDCG@10 with constraint-aware graded gains (Exact and Partial products
+priced <= X keep their gain; everything else is 0), violation rate (share of returned
 results over budget), fill rate (returned results / 10). Bootstrap 95% CIs.
 
 Prices are synthetic (WANDS has none), so this measures filter mechanics, not
@@ -42,7 +46,8 @@ from src.ingestion.embedder import ProductEmbedder
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPORTS_DIR = REPO_ROOT / "reports"
 K = 10
-SYSTEMS = ("no_parsing", "post_filter", "pre_filter")
+SYSTEMS = ("no_parsing", "post_filter", "post_filter_overfetch", "pre_filter")
+OVERFETCH = 100
 
 
 async def fetch_prices(service: ProductSearchService, product_ids: set[str]) -> dict[str, float]:
@@ -61,7 +66,9 @@ def budget_for(exact_prices: list[float]) -> float:
 async def run(args: argparse.Namespace) -> None:
     queries = [q for q in load_wands_queries(split=args.split) if q.exact]
     service = ProductSearchService(embedder=MemoEmbedder(ProductEmbedder()), collection_name=args.collection)
-    prices = await fetch_prices(service, {p for q in queries for p in q.exact})
+    # Prices of every product with a positive gain: Partial products count too, so they
+    # need a price to decide whether they fit the budget.
+    prices = await fetch_prices(service, {p for q in queries for p, g in q.gains.items() if g > 0})
 
     rows: dict[str, list[dict]] = {s: [] for s in SYSTEMS}
     try:
@@ -75,10 +82,12 @@ async def run(args: argparse.Namespace) -> None:
 
             raw = await service.search(constrained, limit=K)
             clean = await service.search(parsed.text, limit=K)
+            deep = await service.search(parsed.text, limit=OVERFETCH)
             filtered = await service.search(parsed.text, limit=K, filters=parsed.filters)
             results = {
                 "no_parsing": raw,
                 "post_filter": [r for r in clean if r["price"] <= budget],
+                "post_filter_overfetch": [r for r in deep if r["price"] <= budget][:K],
                 "pre_filter": filtered,
             }
             for system, res in results.items():
@@ -98,7 +107,7 @@ async def run(args: argparse.Namespace) -> None:
         s: {m: vars(bootstrap_mean([r[m] for r in rows[s]])) for m in ("ndcg@10", "violation_rate", "fill_rate")}
         for s in SYSTEMS
     }
-    for s in ("no_parsing", "post_filter"):
+    for s in ("no_parsing", "post_filter", "post_filter_overfetch"):
         summary["pre_filter"][f"ndcg_vs_{s}"] = vars(paired_difference(
             [r["ndcg@10"] for r in rows["pre_filter"]], [r["ndcg@10"] for r in rows[s]]))
 
@@ -113,7 +122,7 @@ async def run(args: argparse.Namespace) -> None:
         lines.append(f"| {s} | {e['ndcg@10']['mean']:.3f} [{e['ndcg@10']['low']:.3f}, {e['ndcg@10']['high']:.3f}] | "
                      f"{e['violation_rate']['mean']:.1%} | {e['fill_rate']['mean'] * K:.1f} |")
     lines.append("")
-    for s in ("no_parsing", "post_filter"):
+    for s in ("no_parsing", "post_filter", "post_filter_overfetch"):
         d = summary["pre_filter"][f"ndcg_vs_{s}"]
         lines.append(f"- pre_filter vs {s}: nDCG@10 {d['mean']:+.3f} [{d['low']:+.3f}, {d['high']:+.3f}]")
     markdown = "\n".join(lines)

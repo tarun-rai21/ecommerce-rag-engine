@@ -18,9 +18,27 @@ def test_rrf_fuse_formula_and_order():
     sparse = [_p("b"), _p("d")]
     fused = rrf_fuse([dense, sparse], k=60, limit=10)
     scores = {pid: s for pid, s, _ in fused}
-    assert scores["b"] == pytest.approx(1 / 62 + 1 / 61)  # rank 2 dense + rank 1 sparse
-    assert scores["a"] == pytest.approx(1 / 61)
+    assert scores["b"] == pytest.approx(1 / 61 + 1 / 60)  # position 1 dense + position 0 sparse
+    assert scores["a"] == pytest.approx(1 / 60)
     assert [pid for pid, _, _ in fused][:2] == ["b", "a"]
+
+
+def test_rrf_fuse_matches_qdrant_fusion():
+    # Qdrant counts positions from 0. Checked in the audit against the server: with 1-based
+    # ranks, 8 of 80 WANDS dev top-10s differed from native fusion at the same k.
+    import random
+
+    from qdrant_client.hybrid.fusion import reciprocal_rank_fusion
+    from qdrant_client.models import ScoredPoint
+
+    rng = random.Random(0)
+    for _ in range(50):
+        ids = rng.sample(range(1, 200), 60)
+        lists = [ids[:40], rng.sample(ids, 40)]
+        ours = {pid: s for pid, s, _ in rrf_fuse([[_p(i) for i in lst] for lst in lists], k=30, limit=80)}
+        theirs = reciprocal_rank_fusion(
+            [[ScoredPoint(id=i, version=0, score=0.0) for i in lst] for lst in lists], limit=80, ranking_constant_k=30)
+        assert {p.id: p.score for p in theirs} == pytest.approx(ours)
 
 
 def test_rrf_ties_broken_by_id_deterministically():

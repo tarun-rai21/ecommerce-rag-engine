@@ -55,9 +55,12 @@ panels = [
     stat("5xx error rate",
          '(sum(rate(rag_requests_total{status=~"5.."}[5m])) or vector(0)) / sum(rate(rag_requests_total[5m]))',
          "percentunit", 4, 0, thresholds=[("green", None), ("orange", 0.01), ("red", 0.05)]),
-    stat("p95 /ask latency",
-         'histogram_quantile(0.95, sum by (le) (rate(rag_request_duration_seconds_bucket{route="/api/v1/ask"}[5m])))',
-         "s", 8, 0, thresholds=[("green", None), ("orange", 2), ("red", 5)]),
+    # The "total" stage, not the request histogram: the UI calls /ask/stream, and for a
+    # streamed response the middleware sees only the time to the headers, before the LLM.
+    stat("p95 answer latency",
+         'histogram_quantile(0.95, sum by (le) (rate(rag_stage_duration_seconds_bucket{stage="total"}[5m])))',
+         "s", 8, 0, thresholds=[("green", None), ("orange", 2), ("red", 5)],
+         description="Question received to answer complete, /ask and /ask/stream, cache hits included"),
     stat("Cache hit ratio", 'sum(rate(rag_cache_lookups_total{result="hit"}[5m])) / sum(rate(rag_cache_lookups_total[5m]))',
          "percentunit", 12, 0),
     stat("Est. LLM cost / hour",
@@ -71,13 +74,14 @@ panels = [
     timeseries("Requests / s by route and status",
                [target("sum by (route, status) (rate(rag_requests_total[1m]))", "{{route}} {{status}}")],
                "reqps", 0, 4),
-    timeseries("Request latency by route (p50, p95)",
+    timeseries("Request latency by route (p50, p95; streams: time to headers)",
                [target(p(0.5, "rag_request_duration_seconds", "route"), "p50 {{route}}", "A"),
                 target(p(0.95, "rag_request_duration_seconds", "route"), "p95 {{route}}", "B")],
                "s", 12, 4),
     # Row 3: pipeline
     timeseries("Stage latency p95 (cache lookup, search, LLM, LLM first token)",
-               [target(p(0.95, "rag_stage_duration_seconds", "stage"), "{{stage}}")], "s", 0, 12,
+               [target('histogram_quantile(0.95, sum by (le, stage) '
+                       '(rate(rag_stage_duration_seconds_bucket{stage!="total"}[5m])))', "{{stage}}")], "s", 0, 12,
                description="Where /ask time goes; search includes query embedding"),
     timeseries("/ask answers by source",
                [target("sum by (source) (rate(rag_answers_total[5m]))", "{{source}}")], "reqps", 12, 12,

@@ -33,6 +33,7 @@ from src.backend.services.llm import (
     LLMService,
     LLMUnavailable,
     StreamUsage,
+    answer_fingerprint,
 )
 from src.backend.services.query_parser import ParsedQuery, SearchFilters, parse_query
 from src.backend.services.search import ProductSearchService
@@ -89,6 +90,17 @@ def _interaction(query: str, interpreted: str, filters: SearchFilters, size: str
         "cache_version": settings.CACHE_VERSION,
         "answered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+
+
+def answer_cache_key(cache_service: CacheService, request: SearchQueryRequest, resolved: ParsedQuery,
+                     index: str) -> str:
+    """Everything that changes the answer: the query, how it was interpreted (filters,
+    size, whether parsing was on), the result count, the index version, and the model
+    and prompt. /ask and /ask/stream share it."""
+    return cache_service.make_key(
+        "ask", request.q, limit=request.limit, filters=resolved.filters.model_dump_json(),
+        parse=request.parse_filters, size=resolved.size, index=index, answer=answer_fingerprint(),
+    )
 
 
 # ── Query interpretation ──────────────────────────────────
@@ -222,6 +234,7 @@ async def ask_products(
     feedback: FeedbackStore = Depends(get_feedback_store),
 ) -> AskResponseEnvelope:
     envelope = await _answer(request, search_service, cache_service, llm_service)
+    observe_stage("total", envelope.timing.total_ms)
     await feedback.record_interaction(getattr(http_request.state, "request_id", None), _interaction(
         request.q, envelope.interpreted_query, envelope.applied_filters, envelope.preferred_size,
         [p.id for p in envelope.retrieved_products], envelope.answer, envelope.source,
@@ -246,10 +259,7 @@ async def _answer(
     cache_start = time.perf_counter()
     # The active index version is part of the key: after an alias switch, answers built
     # on the old index are no longer served.
-    cache_key = cache_service.make_key(
-        "ask", request.q, limit=request.limit, filters=resolved.filters.model_dump_json(),
-        index=await search_service.active_collection(),
-    )
+    cache_key = answer_cache_key(cache_service, request, resolved, await search_service.active_collection())
     cached = await cache_service.get(cache_key)
     cache_ms = _ms(cache_start)
     observe_stage("cache_lookup", cache_ms)
@@ -331,8 +341,9 @@ async def _answer(
         if llm_result.prompt_tokens is not None and llm_result.completion_tokens is not None else None,
     )
 
-    # Step 4: Cache write — successful generations only, never fallback messages.
-    if llm_result.ok and await cache_service.set(cache_key, envelope.model_dump_json()):
+    # Step 4: Cache write — complete, successful generations only: never fallback
+    # messages, and never an answer cut off at max_tokens.
+    if llm_result.ok and not llm_result.truncated and await cache_service.set(cache_key, envelope.model_dump_json()):
         logger.info(f"[CACHE SET] key={cache_key}")
 
     return envelope
@@ -382,9 +393,7 @@ async def ask_products_stream(
             "applied_filters": resolved.filters.model_dump(), "preferred_size": resolved.size}
 
     cache_start = time.perf_counter()
-    cache_key = cache_service.make_key("ask", request.q, limit=request.limit,
-                                       filters=resolved.filters.model_dump_json(),
-                                       index=await search_service.active_collection())
+    cache_key = answer_cache_key(cache_service, request, resolved, await search_service.active_collection())
     cached = await cache_service.get(cache_key)
     cache_ms = _ms(cache_start)
     observe_stage("cache_lookup", cache_ms)
@@ -405,6 +414,7 @@ async def ask_products_stream(
             timing = TimingBreakdown(cache_lookup_ms=cache_ms, search_ms=0.0, llm_ms=0.0,
                                      total_ms=_ms(total_start))
             yield _sse("done", {"source": "cache", "timing": timing.model_dump(), "usage": None})
+            observe_stage("total", timing.total_ms)
             await feedback.record_interaction(request_id, _interaction(
                 request.q, resolved.text, resolved.filters, resolved.size,
                 [p.id for p in envelope.retrieved_products], envelope.answer, "cache",
@@ -427,6 +437,7 @@ async def ask_products_stream(
             timing = TimingBreakdown(cache_lookup_ms=cache_ms, search_ms=search_ms, llm_ms=0.0,
                                      total_ms=_ms(total_start))
             yield _sse("done", {"source": "no_results", "timing": timing.model_dump(), "usage": None})
+            observe_stage("total", timing.total_ms)
             await feedback.record_interaction(request_id, _interaction(
                 request.q, resolved.text, resolved.filters, resolved.size, [], REFUSAL_MESSAGE, "no_results", await search_service.active_collection()))
             return
@@ -446,6 +457,10 @@ async def ask_products_stream(
             tail = cleaner.finish()
             if tail:
                 yield _sse("token", {"text": tail})
+            if not cleaner.text:  # nothing to show (e.g. all tokens spent on reasoning): as /ask does
+                logger.error("LLM stream produced no answer text")
+                source = "llm_error"
+                yield _sse("token", {"text": UNAVAILABLE_MESSAGE})
         except LLMUnavailable as e:
             logger.error(f"LLM stream unavailable: {e}")
             source = "llm_error"
@@ -470,11 +485,15 @@ async def ask_products_stream(
         yield _sse("done", {"source": source, "timing": timing.model_dump(),
                             "usage": token_usage.model_dump() if token_usage else None,
                             "time_to_first_token_ms": first_token})
+        observe_stage("total", timing.total_ms)
         answer = cleaner.text if source == "llm" else (cleaner.text or UNAVAILABLE_MESSAGE)
         await feedback.record_interaction(request_id, _interaction(
             request.q, resolved.text, resolved.filters, resolved.size, [p.id for p in products], answer, source,
             await search_service.active_collection()))
-        if source == "llm" and cleaner.text:  # the same entry /ask writes, so either endpoint can serve it
+        if usage.truncated:
+            logger.warning(f"LLM answer cut off at max_tokens for query: '{request.q}'")
+        # The same entry /ask writes, so either endpoint can serve it; never a cut-off answer.
+        if source == "llm" and cleaner.text and not usage.truncated:
             stored = AskResponseEnvelope(
                 answer=cleaner.text, source="llm", retrieved_products=products, timing=timing,
                 interpreted_query=resolved.text, applied_filters=resolved.filters,

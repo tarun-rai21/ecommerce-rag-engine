@@ -91,3 +91,21 @@ def test_search_service_resolves_the_alias_for_cache_keys():
 
     plain = ProductSearchService(client=FakeQdrant(), embedder=object(), collection_name="unaliased")
     assert asyncio.run(plain.active_collection()) == "unaliased"  # not an alias: its own name
+
+
+def test_failed_build_is_deleted_so_rollback_cannot_reach_it(client, embedder, sample_products, monkeypatch, tmp_path):
+    # A build that fails validation used to stay as "<alias>_vN"; --rollback picks the newest
+    # version below the current one, so it could later switch to that never-validated build.
+    from src.ingestion import ingest
+
+    v1 = build(client, embedder, sample_products[:5], 1)
+    promote(client, ALIAS, v1)
+    monkeypatch.setattr(ingest, "get_client", lambda: client)
+    monkeypatch.setattr(ingest, "ProductEmbedder", lambda: embedder)
+    monkeypatch.setattr(ingest, "REPORTS_DIR", tmp_path)
+    monkeypatch.setattr(ingest, "LOADERS", {"sample": lambda limit=None: sample_products[:5]})
+    monkeypatch.setattr(ingest, "validate", lambda *a, **kw: ["forced failure"])
+    with pytest.raises(SystemExit):
+        ingest.main(["--dataset", "sample", "--collection", ALIAS, "--versioned", "--no-cache"])
+    assert list(versions(client, ALIAS).values()) == [v1]  # v2 was deleted
+    assert alias_target(client, ALIAS) == v1

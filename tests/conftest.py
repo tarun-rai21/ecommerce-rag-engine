@@ -52,7 +52,8 @@ def make_client():
     def _make(search=None, redis=None, llm=None):
         app.state.search_service = search or FakeSearch()
         app.state.cache_service = CacheService(client=redis or FakeRedis())
-        app.state.feedback_store = FeedbackStore(app.state.cache_service.client)
+        app.state.feedback_store = FeedbackStore(app.state.cache_service.client,
+                                                  available=lambda: app.state.cache_service.available)
         app.state.llm_service = llm or FakeLLM()
         # Not used as a context manager, so the lifespan (real services) doesn't run.
         return TestClient(app, raise_server_exceptions=False)

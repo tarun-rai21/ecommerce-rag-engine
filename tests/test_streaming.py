@@ -140,3 +140,35 @@ def test_cleaner_holds_text_until_the_sentence_is_complete():
     assert c.feed("This is the only rug in our cat") == ""
     assert c.feed("alog. Here is ") == ""          # the claim is dropped once complete
     assert c.feed("another. And") == "Here is another. "
+
+
+class TruncatingLLM(StreamingLLM):
+    async def stream_answer(self, query, context, usage):
+        async for piece in super().stream_answer(query, context, usage):
+            yield piece
+        usage.finish_reason = "length"
+
+
+def test_answer_cut_off_at_max_tokens_is_shown_but_not_cached(make_client):
+    llm = TruncatingLLM()
+    c = make_client(llm=llm, redis=FakeRedis())
+    first = events(c.post("/api/v1/ask/stream", json={"q": "rug"}))
+    assert answer_of(first) == "Here are two rugs. Both are grey." and first[-1][1]["source"] == "llm"
+    second = events(c.post("/api/v1/ask/stream", json={"q": "rug"}))
+    assert second[0][1]["source"] == "llm" and llm.streams == 2  # generated again, not served from cache
+
+
+def test_empty_stream_gets_the_fallback_message(make_client):
+    c = make_client(llm=StreamingLLM(text=""), redis=FakeRedis())
+    evts = events(c.post("/api/v1/ask/stream", json={"q": "rug"}))
+    assert answer_of(evts) == UNAVAILABLE_MESSAGE and evts[-1][1]["source"] == "llm_error"
+
+
+def test_cache_key_separates_parsing_on_and_off(make_client):
+    # Same words, same (empty) filters, but parsing turns "8x10" into a size preference,
+    # so retrieval differs and the two must not share an answer.
+    llm = StreamingLLM()
+    c = make_client(llm=llm, redis=FakeRedis())
+    c.post("/api/v1/ask/stream", json={"q": "grey rug 8x10"})
+    other = events(c.post("/api/v1/ask/stream", json={"q": "grey rug 8x10", "parse_filters": False}))
+    assert other[0][1]["source"] == "llm" and llm.streams == 2

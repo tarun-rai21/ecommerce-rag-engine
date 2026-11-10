@@ -142,8 +142,8 @@
     },
     {
       "type": "stat",
-      "title": "p95 /ask latency",
-      "description": "",
+      "title": "p95 answer latency",
+      "description": "Question received to answer complete, /ask and /ask/stream, cache hits included",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -192,7 +192,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_request_duration_seconds_bucket{route=\"/api/v1/ask\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(rag_stage_duration_seconds_bucket{stage=\"total\"}[5m])))",
           "legendFormat": "",
           "refId": "A"
         }
@@ -404,7 +404,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Request latency by route (p50, p95)",
+      "title": "Request latency by route (p50, p95; streams: time to headers)",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -496,7 +496,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(rag_stage_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(rag_stage_duration_seconds_bucket{stage!=\"total\"}[5m])))",
           "legendFormat": "{{stage}}",
           "refId": "A"
         }

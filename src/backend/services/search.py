@@ -41,7 +41,11 @@ def size_first(results: list[dict], size: str, limit: int) -> list[dict]:
 
 
 def rrf_fuse(ranked_lists: list[list], k: int, limit: int) -> list[tuple[object, float, dict]]:
-    """Reciprocal Rank Fusion: score(d) = Σ_m 1 / (k + rank_m(d)), rank starting at 1.
+    """Reciprocal Rank Fusion: score(d) = Σ_m 1 / (k + pos_m(d)), pos starting at 0.
+
+    Qdrant's convention (its server and qdrant_client.hybrid.fusion both count from 0),
+    so this matches native fusion exactly. In the textbook 1-based form, 1/(k' + rank),
+    this is k' = k - 1: the tuned k=30 is k'=29.
 
     Each input list holds Qdrant points (``.id``, ``.payload``) in rank order.
     Returns (point_id, score, payload) sorted by score, ties broken by id.
@@ -49,8 +53,8 @@ def rrf_fuse(ranked_lists: list[list], k: int, limit: int) -> list[tuple[object,
     scores: dict[object, float] = {}
     payloads: dict[object, dict] = {}
     for hits in ranked_lists:
-        for rank, hit in enumerate(hits, start=1):
-            scores[hit.id] = scores.get(hit.id, 0.0) + 1.0 / (k + rank)
+        for pos, hit in enumerate(hits):
+            scores[hit.id] = scores.get(hit.id, 0.0) + 1.0 / (k + pos)
             payloads.setdefault(hit.id, hit.payload or {})
     ranked = sorted(scores.items(), key=lambda x: _rank_key(x[0], x[1]))[:limit]
     return [(doc_id, score, payloads[doc_id]) for doc_id, score in ranked]
