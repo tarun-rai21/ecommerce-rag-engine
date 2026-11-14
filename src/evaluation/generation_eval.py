@@ -7,6 +7,7 @@ Fixed sample (seeded, from the dev split so the test split stays untouched):
   ooc          30 hand-written out-of-catalog queries (out_of_catalog.json):
                the catalog stocks nothing that matches, so the right answer is the
                refusal sentence
+  sized        10 rug queries with a room size ("grey area rug 8x10"), 5 rugs x 2 sizes
 
 Each query runs through the production path: query parsing -> hybrid search
 (limit 5) -> build_context -> generator (same prompt and parameters as /ask).
@@ -20,7 +21,8 @@ Judge calibration: `--export-labels` writes a blind sheet (no judge output) of 3
 answered items for a reviewer to label; `--calibrate` reports judge-vs-reviewer agreement.
 
 All LLM calls are cached in .cache/llm_calls.sqlite, so re-runs are free and
-give identical numbers. A cold run takes ~30-40 min on Groq's free tier.
+give identical numbers. A cold run takes about 2 hours on Groq's free tier, longer when
+its rate limits force long waits; an interrupted run resumes from the cache.
 
 Usage:
   python -m src.evaluation.generation_eval

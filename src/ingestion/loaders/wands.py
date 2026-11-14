@@ -1,7 +1,7 @@
 """Loader for the Wayfair ANnotation DataSet (WANDS), MIT licence.
 
 Source: https://github.com/wayfair/WANDS (dataset/product.csv, query.csv, label.csv;
-tab-separated, UTF-8). Download with ``python -m data.download_wands``.
+tab-separated, UTF-8). Download with ``python scripts/download_wands.py``.
 
 Produces raw dicts in the ProductRecord shape; validation happens in ingestion.
 """
