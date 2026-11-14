@@ -580,30 +580,30 @@ python -m src.evaluation.generation_eval --segments sized ooc --compare reports/
 
 `--segments` (`plain`, `constrained`, `ooc`, `sized`) runs part of the sample. The report is saved as `generation-subset_*`, so it's never mistaken for a full run. `--compare` prints paired changes on the shared items: refusals that flipped, and answers that gained or lost full support, with a CI. A full run is still needed before reporting numbers.
 
-> **Measured before the latest prompt fix.** A formatting error in the system prompt (rule 3 ran on from rule 2's line) was fixed after this run. (The parser was also tightened, but none of the evaluation queries is interpreted differently.) The numbers below come from the earlier prompt; re-run `python -m src.evaluation.generation_eval` (about 2 hours on Groq's free tier) before quoting them as current.
-
 110 queries go through the production path (parsing, hybrid search, context, generator): 50 WANDS dev queries, 20 more with a budget appended, 30 hand-written queries for products a home-goods catalog doesn't stock (each checked against the catalog's top results), and 10 rug queries with a room size. An LLM judge from a different model family (`qwen/qwen3.8-27b`) audits each answer against its context, and rule-based checks cover refusals, prices and wording. 95% bootstrap CIs.
 
 | Metric | Result |
 |---|---|
-| Correct refusal, out-of-catalog | 100% (30/30) |
-| Refusal on in-catalog queries | 14.3% [7.1%, 22.9%] (10/70) |
-| ...when an Exact product was among the 5 retrieved | 3.7% [0.0%, 9.3%] (2/54) |
+| Correct refusal, out-of-catalog | 96.7% [90.0%, 100%] (29/30) |
+| Refusal on in-catalog queries | 18.6% [10.0%, 28.6%] (13/70) |
+| ...when an Exact product was among the 5 retrieved | 1.9% [0.0%, 5.7%] (1/53) |
 | Refusal on rug queries with a room size | 0% (0/10) |
-| Claims the judge found supported | 99.0% [98.3%, 99.6%] (1,687 of 1,701) |
-| Answers with every claim supported (judge) | 84.3% [75.7%, 92.9%]; see calibration below |
-| Relevance (judge, 1-5) | 4.79 [4.69, 4.87] |
-| Answers quoting a price not in the context | 0% (0/70) |
-| Answers where a whole-catalog claim was removed in code | 14.3% (10/70) |
+| Claims the judge found supported | 99.1% [98.5%, 99.7%] (1,609 of 1,622) |
+| Answers with every claim supported (judge) | 86.8% [77.9%, 94.1%] (59/68); see calibration below |
+| Relevance (judge, 1-5, in-catalog answers) | 4.85 [4.76, 4.93] |
+| Answers quoting a price not in the context | 0% (0/68) |
+| Answers where a whole-catalog claim was removed in code | 22.1% (15/68) |
+
+Run on 2026-11-14 at commit `ef10e81` (`results/generation.*`). Compared with the previous full run (before the system-prompt formatting fix), on the same 110 items: in-catalog refusals rose from 10 to 13 of 70, answers with every claim supported went from 56 to 59 of the 67 answered both times (+4.5 points [−6.0, +16.4], not significant), and the one out-of-catalog query that slipped through is the shoe query described below. Every difference is within run-to-run noise at this sample size.
 
 **Room-size queries took four rounds.** The final version differs from the first in four ways:
 
-1. **Softer refusal rule.** The model refuses only when no product is the kind of item requested, and may show a product whose requested detail isn't listed. "grey area rug 8x10" was refused before. This let one out-of-catalog query through ("men's running shoes size 10" returned shoe racks), so the rule now adds that a merely related product, such as storage or an accessory, isn't the item asked for. That only partly works: the evaluation's one answer to the shoe query was a refusal, but repeating the identical request 5 times gave 1 refusal and 4 shoe-rack answers.
+1. **Softer refusal rule.** The model refuses only when no product is the kind of item requested, and may show a product whose requested detail isn't listed. "grey area rug 8x10" was refused before. This let one out-of-catalog query through ("men's running shoes size 10" returned shoe racks), so the rule now adds that a merely related product, such as storage or an accessory, isn't the item asked for. That only partly works: repeating the identical request 5 times gave 1 refusal and 4 shoe-rack answers, and the latest full run also answered it with shoe racks (the one out-of-catalog miss above).
 2. **Sizes in the context.** The model sees each rug's sizes, but it still named only 22 of the 31 retrieved rugs that fit. All 9 it left out had near sizes, such as 7' 10" × 10' 2" for an 8x10. A rule in the system prompt didn't help (21/31).
 3. **A line naming the rugs that fit.** The context now opens by listing the products sold at or close to the requested size, with their sizes. The model then named 30 of 31 (a rough title match on the answers), and "grey area rug 8x10" shows all three grey rugs that fit instead of one. A side effect: answers began calling the list "the only ones in our catalog".
-4. **Whole-catalog claims removed in code.** The prompt already forbade those claims and a warning in the context didn't stop them, so `clean_output` now deletes any sentence that claims the products cover the whole catalog, before the answer is shown or judged. It removed one from 10 of 70 answers here. It works on wording, so a paraphrase can still slip through: the judge flagged one ("these are the ones that match").
+4. **Whole-catalog claims removed in code.** The prompt already forbade those claims and a warning in the context didn't stop them, so `clean_output` now deletes any sentence that claims the products cover the whole catalog, before the answer is shown or judged. It removed one from 15 of 68 answers in the latest run. It works on wording, so a paraphrase can still slip through: the judge flagged one ("these are the ones that match").
 
-Against the version before these changes, on the same queries: out-of-catalog refusals 29 → 30 of 30 (but see the shoe query above), in-catalog refusals unchanged at 10 of 70, and answers with every claim supported 62 → 59 of 70, a change of −4.3 points [−15.7, +7.1] that isn't significant. On the 10 rug queries, 6 answers are fully supported against 9 before. Answers there now list 3 to 5 rugs each, and the unsupported claims are mostly pile heights stated for the wrong rug. These steps were tuned on the same 10 rug queries they're measured on, so treat the rug numbers as development results.
+Against the version before these changes, on the same queries: out-of-catalog refusals 29 → 30 of 30 (but see the shoe query above), in-catalog refusals unchanged at 10 of 70, and answers with every claim supported 62 → 59 of 70, a change of −4.3 points [−15.7, +7.1] that isn't significant. On the 10 rug queries, 6 answers were fully supported against 9 before (9 again in the latest run). Answers there now list 3 to 5 rugs each, and the unsupported claims are mostly pile heights stated for the wrong rug. These steps were tuned on the same 10 rug queries they're measured on, so treat the rug numbers as development results.
 
 **Prompt iteration.** The first version told shoppers "these are the only products in our catalog" in 25% of answers (15/59), although the model sees 5 products. Two prompt revisions brought this to 1.7%, a paired change of −22 points [−36, −10], with no significant change in supported claims (−0.2 points [−1.0, +0.8]). Answers grew about 20% longer. The same queries were used to develop the prompt and report these results, and the WANDS queries all come from the dev split, so treat them as development numbers rather than a held-out estimate.
 
@@ -616,7 +616,7 @@ Against the version before these changes, on the same queries: out-of-catalog re
 | Relevance | 87% exact, 100% within 1 point |
 | Disagreements on support | 7, all where the reviewer found a problem the judge passed |
 
-Read the 84.3% above as an upper estimate. The misses are mostly small embellishments ("classic design", a product name read as a material). Limits: the reviewer is an AI, it had already seen the judge's flagged claims for this run, so agreement may be inflated, it marked an answer down for a single unsupported word, and 30 answers is a small sample. A human review is still needed before calling the judge human-validated.
+Read the 86.8% above as an upper estimate. The misses are mostly small embellishments ("classic design", a product name read as a material). Limits: the reviewer is an AI, it had already seen the judge's flagged claims for this run, so agreement may be inflated, it marked an answer down for a single unsupported word, and 30 answers is a small sample. A human review is still needed before calling the judge human-validated.
 
 Every LLM call is cached by its full request in `.cache/llm_calls.sqlite`, so an unchanged re-run is free. A cold run takes about 2 hours on Groq's free tier, and longer when its rate limits force long waits.
 
